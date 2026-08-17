@@ -11,6 +11,7 @@ The swell envelopes that give the ocean its shape arrive in stage 5.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -20,7 +21,7 @@ from violet._types import TAU
 if TYPE_CHECKING:
     from violet._types import FloatArray, IntArray
 
-__all__ = ["fade_envelope", "fade_length", "slow_lfo"]
+__all__ = ["Breathing", "fade_envelope", "fade_length", "slow_lfo"]
 
 
 def fade_length(
@@ -85,3 +86,36 @@ def slow_lfo(
     swing = 0.5 + 0.5 * np.sin(TAU * t / period + phase)
     out: FloatArray = low + (high - low) * swing
     return out
+
+
+@dataclass(frozen=True, slots=True)
+class Breathing:
+    """
+    Per-voice slow amplitude drift, so a held chord does not sit still.
+
+    Each voice gets its own period and its own starting phase, both derived
+    from its index. The periods are deliberately incommensurate — 47, 66, 85,
+    104 seconds — so the voices drift in and out of alignment and the chord
+    keeps changing shape without ever repeating a pattern. Give them all the
+    same period and the chord pumps instead of breathing.
+
+    The floor is well above zero: this is a swell, not a gate. A voice that
+    disappears and comes back is heard as an event; one that varies between
+    62% and 100% is heard as a texture.
+    """
+
+    base_period: float = 47.0
+    period_step: float = 19.0
+    phase_step: float = 1.9
+    low: float = 0.62
+    high: float = 1.0
+
+    def gain(self, t: FloatArray, voice: int) -> FloatArray:
+        """Envelope for one voice of a chord, at absolute times ``t``."""
+        return slow_lfo(
+            t,
+            period=self.base_period + self.period_step * voice,
+            low=self.low,
+            high=self.high,
+            phase=self.phase_step * voice,
+        )

@@ -23,19 +23,24 @@ way to seek.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 
+from violet.dsp.env import Breathing
 from violet.dsp.osc import sine, sine_pair
+from violet.harmony import crossfade_gain
 
 if TYPE_CHECKING:
     from violet._types import FloatArray, IntArray, Stereo
+    from violet.harmony import ChordEvent
 
 __all__ = [
     "BinauralPair",
+    "ChordBed",
     "Layer",
     "Pedal",
     "Span",
@@ -200,3 +205,74 @@ class Pedal:
         """Render the drone over ``span``, the same array to both ears."""
         drone = sine(span.t, self.freq, self.level)
         return drone, drone
+
+
+@dataclass(frozen=True, slots=True)
+class ChordBed:
+    """
+    A progression of chords, every voice its own binaural pair.
+
+    This is the layer that makes moving harmony and a single beat compatible.
+    A voice at ratio ``r`` off the root sounds ``r*root - beat/2`` in one ear
+    and ``r*root + beat/2`` in the other, so *every* voice of *every* chord
+    beats at exactly the same rate. The harmony can go where it likes; the
+    pulse does not move.
+
+    Events are planned in advance by :func:`violet.harmony.plan_progression`,
+    which is what keeps this layer stateless: the whole progression is a
+    function of the seed, decided before the first sample is rendered, so the
+    layer only has to evaluate it.
+    """
+
+    events: tuple[ChordEvent, ...]
+    root: float
+    beat: float
+    level: float
+    crossfade: float = 16.0
+    breathing: Breathing = field(default_factory=Breathing)
+
+    stateful: ClassVar[bool] = False
+
+    def __post_init__(self) -> None:
+        if self.level < 0.0:
+            msg = f"level must not be negative, got {self.level!r}"
+            raise ValueError(msg)
+        if self.root <= 0.0:
+            msg = f"root must be positive, got {self.root!r}"
+            raise ValueError(msg)
+
+    @property
+    def peak(self) -> float:
+        """
+        Upper bound: the widest chord, doubled by root two, not by two.
+
+        Two chords sound at once during a crossfade, but they are equal power,
+        so their gains sum to at most ``sqrt(2)`` rather than to 2. Three
+        chords never overlap — a chord is always held for at least one
+        crossfade, which :class:`violet.harmony.WalkConfig` enforces.
+        """
+        widest = max((event.chord.voices for event in self.events), default=0)
+        return self.level * widest * self.breathing.high * math.sqrt(2.0)
+
+    def render(self, span: Span) -> Stereo:
+        """Render every chord audible over ``span``, and no others."""
+        t = span.t
+        left = np.zeros(span.n, dtype=np.float64)
+        right = np.zeros(span.n, dtype=np.float64)
+
+        for event in self.events:
+            audible_from, audible_to = event.support(self.crossfade)
+            if audible_to < span.t0 or audible_from > span.t1:
+                continue
+
+            gain = crossfade_gain(t, event, self.crossfade)
+            if not gain.any():
+                continue
+
+            for voice, freq in enumerate(event.chord.frequencies(self.root)):
+                envelope = self.level * gain * self.breathing.gain(t, voice)
+                voice_left, voice_right = sine_pair(t, freq, self.beat)
+                left += envelope * voice_left
+                right += envelope * voice_right
+
+        return left, right

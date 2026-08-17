@@ -24,7 +24,8 @@ import soundfile as sf
 
 from violet import tuning
 from violet.engine import RenderConfig, loop_length, render_to_file
-from violet.layers import BinauralPair, Layer, Pedal
+from violet.harmony import plan_progression
+from violet.layers import BinauralPair, ChordBed, Layer, Pedal
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -33,14 +34,23 @@ if TYPE_CHECKING:
 SR = 44100
 ORIGIN_HZ = 83.949
 
+# Levels and gains that live inside the prototypes as local variables, so
+# there is nothing to import them from. They move into presets at stage 6.
+OCEAN_SR = 32000
+OCEAN_VOICE_LEVEL = 0.070
+OCEAN_PEDAL_LEVEL = 0.080
+OCEAN_MASTER_GAIN = 1.25
+OCEAN_FADE_SECONDS = 22.0
+OCEAN_FADE_DENOMINATOR = 5
+
 #: One int16 count is 1/32767 of full scale; two is the quantisation
 #: disagreement between the prototype's truncation and libsndfile's rounding.
 TOLERANCE_COUNTS = 2
 
 
-def read_int16(path: Path) -> np.ndarray:
+def read_int16(path: Path, sample_rate: int = SR) -> np.ndarray:
     audio, rate = sf.read(path, dtype="int16", always_2d=True)
-    assert rate == SR
+    assert rate == sample_rate
     return np.asarray(audio, dtype=np.int64)
 
 
@@ -192,3 +202,70 @@ def test_headroom_rule_differs_from_the_prototype_at_high_levels(
     # And ours is still safe without the unnecessary attenuation.
     assert result.peak < 0.95
     assert result.clipped == 0
+
+
+# ---------------------------------------------------------------------------
+# prototype 3, tonal side (stage 4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("beat", "seed", "seconds"),
+    [
+        (4.0, 5, 20.0),
+        (7.83, 12, 30.0),
+        # Long enough to cross a chord change and its 16-second crossfade.
+        (2.0, 5, 60.0),
+    ],
+)
+def test_prototype_three_tonal_parity(
+    tmp_path: Path,
+    reference_ocean: ModuleType,
+    beat: float,
+    seed: int,
+    seconds: float,
+) -> None:
+    """
+    Pedal plus chords, with the ocean turned all the way down.
+
+    ``--ocean 0`` multiplies the noise bed by zero, which leaves the
+    prototype's tonal side alone and gives stage 4 an exact target. The
+    ocean's own generator draws from a separate seed, so silencing it does not
+    disturb the progression.
+    """
+    reference_path = tmp_path / "reference.wav"
+    _chords, root = reference_ocean.render(
+        str(reference_path),
+        beat,
+        seconds,
+        0.0,  # ocean level
+        seed,
+        base=ORIGIN_HZ,
+    )
+    assert root == pytest.approx(tuning.carrier_for(ORIGIN_HZ))
+
+    events = plan_progression(seconds, np.random.default_rng(seed))
+    layers: list[Layer] = [
+        ChordBed(events=events, root=root, beat=beat, level=OCEAN_VOICE_LEVEL),
+        Pedal(freq=ORIGIN_HZ, level=OCEAN_PEDAL_LEVEL),
+    ]
+
+    ours_path = tmp_path / "violet.wav"
+    render_to_file(
+        layers,
+        RenderConfig(
+            OCEAN_SR,
+            duration=seconds,
+            block_seconds=10.0,
+            gain=OCEAN_MASTER_GAIN,
+            fade_seconds=OCEAN_FADE_SECONDS,
+            fade_max_denominator=OCEAN_FADE_DENOMINATOR,
+        ),
+        ours_path,
+        subtype="PCM_16",
+    )
+
+    theirs = read_int16(reference_path, OCEAN_SR)
+    ours = read_int16(ours_path, OCEAN_SR)
+    assert ours.shape == theirs.shape
+    assert np.max(np.abs(ours - theirs)) <= TOLERANCE_COUNTS

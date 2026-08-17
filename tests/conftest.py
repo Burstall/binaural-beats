@@ -61,3 +61,15 @@ def reference_tuning() -> ModuleType:
 def reference_binaural() -> ModuleType:
     """The frozen ``reference/binaural_e_violet.py`` prototype."""
     return load_reference("binaural_e_violet")
+
+
+@pytest.fixture(scope="session")
+def reference_layered() -> ModuleType:
+    """The frozen ``reference/binaural_layered.py`` prototype."""
+    return load_reference("binaural_layered")
+
+
+@pytest.fixture(scope="session")
+def reference_ocean() -> ModuleType:
+    """The frozen ``reference/ocean_chords_e.py`` prototype."""
+    return load_reference("ocean_chords_e")
