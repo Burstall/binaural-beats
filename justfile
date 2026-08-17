@@ -36,9 +36,12 @@ typecheck:
 check: lint typecheck test
 
 # Render a preset.  Example:  just render ocean "--minutes 30 --out out/o.flac"
-# (the CLI lands in stage 6)
 render preset="ocean" *args:
     uv run violet render {{ preset }} {{ args }}
+
+# List the presets.
+presets:
+    uv run violet presets
 
 # Print the tuning maths for a base frequency.
 tune freq="83.949":
