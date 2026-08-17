@@ -149,4 +149,13 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    # Protocol method bodies. There is nothing there to execute — the whole
+    # point of `...` is that the implementations supply the behaviour.
+    '^\s*\.\.\.$',
+]
+# A floor, not a target. Set below what the suite actually reaches, so it
+# catches a real regression without failing over a one-line refactor.
+fail_under = 97

@@ -385,14 +385,13 @@ def _layer_from_table(table: Mapping[str, Any], preset: str) -> LayerSpec:
         msg = f"{preset}: layer kind {kind!r} is not one of: {known}"
         raise ValueError(msg)
 
-    if kind == "pair" and "swell" in fields:
-        fields["swell"] = LfoSpec(**fields["swell"])
-    for key in ("bright_hz", "set_seconds"):
-        if key in fields:
-            low, high = fields[key]
-            fields[key] = (float(low), float(high))
-
     try:
+        if kind == "pair" and "swell" in fields:
+            fields["swell"] = LfoSpec(**fields["swell"])
+        for key in ("bright_hz", "set_seconds"):
+            if key in fields:
+                low, high = fields[key]
+                fields[key] = (float(low), float(high))
         return _SPECS[kind](**fields)
     except TypeError as error:
         msg = f"{preset}: bad {kind} layer — {error}"

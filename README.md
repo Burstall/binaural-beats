@@ -329,7 +329,8 @@ gives the encoder more to spend bits on.
 ## Development
 
 ```sh
-uv run pytest                  # 350-odd tests, about 40 seconds
+uv run pytest                  # 395 tests, about 45 seconds
+uv run pytest --cov            # 99% covered, with a 97% floor that CI enforces
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
@@ -374,6 +375,11 @@ measured against the distribution of interior steps, and a golden-file test that
 hashes five seconds of every preset. A golden failure means the output changed —
 whether that was intended is the question it asks. `uv run python
 tests/regolden.py` updates the hashes when the answer is yes.
+
+`tests/test_validation.py` covers the error paths on purpose. Every message in
+it is one somebody will read at three in the morning wondering why their render
+stopped, and a validation branch that has never run is a branch that might not
+raise, or might raise the wrong thing.
 
 `tests/test_architecture.py` fails if any module in `src/violet` ever grows a
 literal base frequency, in code, a default argument, a docstring or a comment.

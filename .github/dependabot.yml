@@ -1,0 +1,43 @@
+# Keeping the pins current, because doing it by hand does not work: the
+# workflow shipped with setup-uv three majors behind and checkout two, and
+# nothing noticed until a deprecation warning appeared in a run log.
+#
+# Both ecosystems are grouped into a single pull request each. A dozen separate
+# PRs for a dozen patch bumps is how people learn to ignore Dependabot.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      # Runtime and tooling separately: a numpy or scipy bump can change the
+      # rendered output and wants listening to, while a ruff bump cannot.
+      runtime:
+        dependency-type: production
+        patterns:
+          - "*"
+      tooling:
+        dependency-type: development
+        patterns:
+          - "*"
+    commit-message:
+      prefix: deps
+    labels:
+      - dependencies
