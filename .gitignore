@@ -27,3 +27,4 @@ htmlcov/
 
 # os
 .DS_Store
+trials/

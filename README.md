@@ -26,12 +26,8 @@ with your eyes shut has value regardless of mechanism.
 **If you have epilepsy or another seizure disorder, check with a doctor before
 using rhythmic audio or visual stimulation.**
 
-The project's own answer to the evidence question is on the roadmap: render two
-files with identical harmony, identical noise and identical seed, one with
-`beat = 4.0` and one with `beat = 0.0`. With no detune there is no binaural beat
-at all, and the files are otherwise indistinguishable. That is a nearly perfect
-placebo control, and it is already possible today —
-`--beat 0` produces exactly it, verified by a test.
+The project's own answer to the evidence question is built in: see
+[Finding out for yourself](#finding-out-for-yourself).
 
 ## Install
 
@@ -313,6 +309,50 @@ Note that a seed changes nothing for the first half-minute of a render: every
 progression starts on the tonic and holds it for at least 38 seconds, so two
 seeds are bit-identical until the first crossfade.
 
+## Finding out for yourself
+
+The null condition is one parameter set to zero. Two files from the same
+configuration, the same seed, the same progression, the same waves, the same
+noise — one with `beat = 4.0` and one with `beat = 0.0`. With no detune there is
+no interaural difference and so no binaural beat at all, and everything else
+about the two files is identical. The ocean beds are *bit-identical*, and
+there's a test asserting it. That is as close to a placebo as audio gets.
+
+```sh
+uv run violet trial start sleep-4hz --preset ocean --minutes 45
+uv run violet trial next sleep-4hz          # tells you which to play tonight
+uv run violet trial log sleep-4hz A --state 4 --note "fell asleep quickly"
+uv run violet trial status sleep-4hz        # progress, giving nothing away
+uv run violet trial reveal sleep-4hz --i-am-done
+```
+
+Four things the design is careful about, each for a reason:
+
+- **The assignment doesn't come from the seed.** It comes from `secrets`. Drawn
+  from the render seed, you could recover it by re-running the walk, and every
+  visible byte in the trial directory would tell you the answer.
+- **Trial renders are WAV, not FLAC.** A compressed format leaks the arm through
+  its own file size: with no detune the two channels of a tonal preset are
+  identical, FLAC's mid/side stage reduces the difference channel to nothing,
+  and the null file comes out **half the size**. Measured: 0.50 for `tones`,
+  0.71 for `layered`, 0.91 for `ocean`. One glance at a directory listing and
+  the trial is over. Uncompressed, both files are byte-for-byte the same length.
+- **Which arm to play is chosen for you.** Left to pick freely you'll choose by
+  mood, and mood is exactly what's being measured.
+- **Unblinding is deliberately awkward.** `reveal` wants `--i-am-done`, refuses
+  below six sessions per arm without `--force`, and records that it happened —
+  anything logged afterwards is marked as no longer blind and excluded.
+
+And one thing it is honest about: **at realistic session counts this cannot
+settle anything.** Detecting even a *large* effect with a rank test at 80% power
+takes about 27 sessions per arm; a medium one takes 68. `reveal` says so, and
+tailors the caveat to the direction — a significant result from a small sample
+gets told it will shrink with more data, a null result gets told that absence of
+a difference isn't evidence there isn't one. It also can't stop you looking at
+the numbers, stopping because they're interesting, and then quoting the p-value
+as though the stopping rule had been fixed in advance. Decide how many sessions
+you're doing before you start.
+
 ## Playback
 
 **Headphones, not speakers.** In a room the two tones mix in the air before they
@@ -329,7 +369,7 @@ gives the encoder more to spend bits on.
 ## Development
 
 ```sh
-uv run pytest                  # 395 tests, about 45 seconds
+uv run pytest                  # 435 tests, about a minute
 uv run pytest --cov            # 99% covered, with a 97% floor that CI enforces
 uv run ruff check .
 uv run ruff format --check .
@@ -357,6 +397,7 @@ violet/
   layers.py     the Layer protocol: BinauralPair, Pedal, ChordBed, Ocean, Air
   engine.py     block-streaming renderer, sinks, loop closing
   presets.py    frozen config, TOML loading
+  trial.py      blinded trials: sealed assignment, logging, honest statistics
   data/         presets.toml — where the base frequency actually lives
   cli.py        typer CLI
 ```
@@ -388,12 +429,8 @@ README and in `data/presets.toml` and nowhere in the Python.
 
 ## Roadmap
 
-1. **Blinded self-experiment mode.** `violet trial start` renders the beat and
-   no-beat versions, names them randomly, and seals the mapping. You log your
-   ratings; `violet trial reveal` unblinds and reports whether they differed by
-   more than chance. Turns the whole project from something you hope works into
-   something you can find out about. The mechanism already exists — `--beat 0` —
-   so this is bookkeeping and a deliberately awkward path to unblinding early.
+1. ~~**Blinded self-experiment mode.**~~ Done — see
+   [Finding out for yourself](#finding-out-for-yourself).
 2. **Beat automation curves.** A 45-minute descent from alpha through theta to
    delta is a far better sleep tool than any fixed rate. Needs integrated phase
    (`phase += 2π·cumsum(f)/sr`) with the accumulator carried across blocks;

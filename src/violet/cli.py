@@ -12,6 +12,7 @@ from violet import __version__, tuning
 from violet.engine import render_to_file
 from violet.layers import ChordBed, Ocean
 from violet.presets import Preset, load_library, resolve_beat
+from violet.trial import ARMS, Trial
 
 app = typer.Typer(
     name="violet",
@@ -19,6 +20,13 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+trial_app = typer.Typer(
+    name="trial",
+    help="Run a blinded trial: is the beat doing anything for you?",
+    no_args_is_help=True,
+)
+app.add_typer(trial_app)
 
 echo = typer.echo
 
@@ -251,6 +259,205 @@ def _layer_line(layer: object, preset: Preset) -> str:
             kind = type(layer).__name__.lower()
             where = f" at {described:.3f} Hz" if described else ""
             return f"{kind:<9} level {layer.level:.3f}{where}"  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# trials
+# ---------------------------------------------------------------------------
+
+TrialsDir = Annotated[
+    Path,
+    typer.Option("--dir", help="Where trials live."),
+]
+
+
+def _open_trial(directory: Path, name: str) -> Trial:
+    try:
+        return Trial.load(directory / name)
+    except (FileNotFoundError, KeyError, ValueError) as error:
+        raise _fail(str(error)) from None
+
+
+@trial_app.command("start")
+def trial_start(  # noqa: PLR0913 - the render knobs, same as `render`
+    name: Annotated[str, typer.Argument(help="A name for this trial.")],
+    *,
+    preset_name: Annotated[
+        str, typer.Option("--preset", help="Preset to test.")
+    ] = "ocean",
+    minutes: Annotated[float | None, typer.Option("--minutes", "-m")] = None,
+    beat: Annotated[str | None, typer.Option("--beat", "-b")] = None,
+    base: Annotated[float | None, typer.Option("--base")] = None,
+    seed: Annotated[int | None, typer.Option("--seed")] = None,
+    scale: Annotated[
+        str, typer.Option("--scale", help="Rating scale, as low-high.")
+    ] = "1-5",
+    presets: PresetsOption = None,
+    directory: TrialsDir = Path("trials"),
+) -> None:
+    """Render both arms of a new trial and seal which is which."""
+    try:
+        preset: Preset = _library(presets)[preset_name]  # type: ignore[index]
+    except KeyError as error:
+        raise _fail(str(error).strip("\"'")) from None
+
+    try:
+        low, high = (int(part) for part in scale.split("-", 1))
+    except ValueError:
+        message = f"--scale must look like 1-5, got {scale!r}"
+        raise _fail(message) from None
+
+    try:
+        preset = preset.with_overrides(
+            minutes=minutes,
+            beat=None if beat is None else resolve_beat(beat),
+            base_hz=base,
+            seed=seed,
+        )
+        echo(f"rendering two arms of {preset.minutes:g} min each. This takes a while.")
+        trial = Trial.create(preset, directory / name, name, scale=(low, high))
+    except ValueError as error:
+        raise _fail(str(error)) from None
+
+    echo(f"\ntrial {trial.name} — {trial.preset}, {trial.beat:g} Hz against silence\n")
+    for arm in ARMS:
+        echo(f"  {trial.arm_path(arm)}")
+    echo(
+        f"\nOne of those has the beat and the other does not. They are otherwise\n"
+        f"the same render: same seed, same chords, same waves, same noise.\n"
+        f"\nUncompressed on purpose — FLAC would give the answer away by file size.\n"
+        f"\nRun `violet trial next {trial.name}` to be told which to play. Rate each\n"
+        f"session {trial.scale[0]} to {trial.scale[1]} with `violet trial log`.\n"
+    )
+
+
+@trial_app.command("next")
+def trial_next(
+    name: Annotated[str, typer.Argument(help="Trial name.")],
+    *,
+    directory: TrialsDir = Path("trials"),
+) -> None:
+    """Say which arm to play next, keeping the two balanced."""
+    trial = _open_trial(directory, name)
+    arm = trial.next_arm()
+    echo(f"play {arm}: {trial.arm_path(arm)}")
+    echo(f'afterwards: violet trial log {name} {arm} --state N --note "..."')
+
+
+@trial_app.command("log")
+def trial_log(
+    name: Annotated[str, typer.Argument(help="Trial name.")],
+    arm: Annotated[str, typer.Argument(help="Which arm you listened to.")],
+    *,
+    state: Annotated[int, typer.Option("--state", "-s", help="Your rating.")],
+    note: Annotated[str, typer.Option("--note", "-n")] = "",
+    directory: TrialsDir = Path("trials"),
+) -> None:
+    """Record one listening session."""
+    trial = _open_trial(directory, name)
+    try:
+        session = trial.log(arm.upper(), state, note)
+    except ValueError as error:
+        raise _fail(str(error)) from None
+
+    counts = trial.counts()
+    echo(f"logged {session.arm} = {session.state}")
+    echo("sessions so far: " + ", ".join(f"{a} {counts[a]}" for a in ARMS))
+    if session.after_reveal:
+        echo("(after unblinding, so it will not count towards the comparison)")
+
+
+@trial_app.command("status")
+def trial_status(
+    name: Annotated[str, typer.Argument(help="Trial name.")],
+    *,
+    directory: TrialsDir = Path("trials"),
+) -> None:
+    """Show progress without giving anything away."""
+    trial = _open_trial(directory, name)
+    counts = trial.counts()
+    echo(f"trial {trial.name} — {trial.preset}, {trial.beat:g} Hz against silence")
+    echo(f"  created   {trial.created}")
+    echo("  sessions  " + ", ".join(f"{a} {counts[a]}" for a in ARMS))
+    echo(f"  revealed  {trial.revealed_at or 'no'}")
+
+    for session in trial.sessions:
+        marker = " (post-reveal)" if session.after_reveal else ""
+        note = f"  {session.note}" if session.note else ""
+        echo(f"    {session.at}  {session.arm} = {session.state}{note}{marker}")
+
+    if not trial.revealed:
+        echo(
+            "\nRatings per arm are shown; which arm carries the beat is not, and "
+            "will not be until you reveal."
+        )
+
+
+@trial_app.command("reveal")
+def trial_reveal(
+    name: Annotated[str, typer.Argument(help="Trial name.")],
+    *,
+    i_am_done: Annotated[
+        bool, typer.Option("--i-am-done", help="Yes, end the blind for good.")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Reveal below the session floor anyway.")
+    ] = False,
+    directory: TrialsDir = Path("trials"),
+) -> None:
+    """Unblind, and report what the ratings do and do not support."""
+    trial = _open_trial(directory, name)
+    try:
+        result = trial.reveal(acknowledged=i_am_done, force=force)
+    except ValueError as error:
+        raise _fail(str(error)) from None
+
+    echo(f"trial {trial.name} — unblinded\n")
+    echo(f"  {result.beat_arm} carried the {trial.beat:g} Hz beat")
+    echo(f"  {result.null_arm} had none\n")
+    echo(
+        f"  with beat     n={result.n_beat}  mean {result.mean_beat:.2f}  "
+        f"{list(result.beat_states)}"
+    )
+    echo(
+        f"  without       n={result.n_null}  mean {result.mean_null:.2f}  "
+        f"{list(result.null_states)}"
+    )
+    echo(f"  difference    {result.difference:+.2f}")
+    if result.excluded:
+        echo(f"  excluded      {result.excluded} session(s) logged after unblinding")
+
+    echo(f"\n{result.verdict}\n")
+    echo(
+        f"For scale: detecting a large effect needs about "
+        f"{result.sessions_for_large_effect} sessions per arm, a medium one about "
+        f"{result.sessions_for_medium_effect}. And a p-value only means what it "
+        f"says if you fixed the number of sessions before you started, rather "
+        f"than stopping when the numbers looked interesting."
+    )
+
+
+@trial_app.command("list")
+def trial_list(*, directory: TrialsDir = Path("trials")) -> None:
+    """List the trials in a directory."""
+    if not directory.is_dir():
+        echo(f"no trials in {directory}")
+        return
+    found = sorted(
+        path for path in directory.iterdir() if (path / "trial.json").is_file()
+    )
+    if not found:
+        echo(f"no trials in {directory}")
+        return
+    for path in found:
+        trial = Trial.load(path)
+        counts = trial.counts()
+        state = "revealed" if trial.revealed else "blind"
+        echo(
+            f"  {trial.name:<16} {trial.preset:<12} {trial.beat:g} Hz  "
+            + ", ".join(f"{a} {counts[a]}" for a in ARMS)
+            + f"  [{state}]"
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
