@@ -86,6 +86,7 @@ select = [
 ignore = [
     # pydocstyle, relaxed: docstrings are expected on public API, but the
     # numpydoc section machinery and one-liner ceremony are not enforced.
+    "D105",   # missing docstring in magic method (__post_init__, __exit__, ...)
     "D107",   # missing docstring in __init__ (documented on the class)
     "D203",   # 1 blank line before class docstring (conflicts with D211)
     "D213",   # multi-line summary on second line (conflicts with D212)

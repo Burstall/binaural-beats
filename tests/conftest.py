@@ -55,3 +55,9 @@ def load_reference(name: str) -> ModuleType:
 def reference_tuning() -> ModuleType:
     """The frozen ``reference/tuning.py`` prototype."""
     return load_reference("tuning")
+
+
+@pytest.fixture(scope="session")
+def reference_binaural() -> ModuleType:
+    """The frozen ``reference/binaural_e_violet.py`` prototype."""
+    return load_reference("binaural_e_violet")
