@@ -195,3 +195,40 @@ level = 0.30
 [[tones-loop.layer]]
 kind = "pedal"
 level = 0.09
+
+# ---------------------------------------------------------------------------
+# descent — forty-five minutes from alpha down to delta, and stay there
+#
+# A fixed rate is a compromise: fast enough to feel like something is
+# happening, slow enough to sleep to, and therefore neither. This holds alpha
+# for the first eight minutes, glides down through theta over the next
+# seventeen, and spends the last twenty at delta.
+#
+# The glide is exponential, not linear. Halving from 8 Hz to 4 sounds like the
+# same size of step as halving from 4 to 2, where a straight line would loiter
+# up at the top and then plunge at the end.
+#
+# Times are in minutes, and the key says so.
+# ---------------------------------------------------------------------------
+[descent]
+description = "45 minutes gliding from alpha through theta down to delta."
+base_hz = 83.949
+sample_rate = 32000
+minutes = 45.0
+seed = 12
+gain = 1.25
+fade_seconds = 22.0
+fade_denominator = 5
+beat = { shape = "exponential", at_minutes = [0, 8, 25, 45], hz = [10, 10, 2, 2] }
+
+[[descent.layer]]
+kind = "chords"
+level = 0.070
+
+[[descent.layer]]
+kind = "pedal"
+level = 0.080
+
+[[descent.layer]]
+kind = "ocean"
+level = 0.45

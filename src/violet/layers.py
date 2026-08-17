@@ -30,10 +30,11 @@ from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 
+from violet.dsp.curves import BeatCurve
 from violet.dsp.env import Breathing, Lfo, Swell, swell_envelope
 from violet.dsp.filters import FilterDesign
 from violet.dsp.noise import KelletPink, OnePole, PinkNoise, spawn_seeds
-from violet.dsp.osc import sine, sine_pair
+from violet.dsp.osc import sine, sine_pair, swept_pair
 from violet.harmony import crossfade_gain, tiles_loop
 
 if TYPE_CHECKING:
@@ -205,7 +206,9 @@ class BinauralPair:
     """
 
     carrier: float
-    beat: float
+
+    #: A fixed rate, or a :class:`~violet.dsp.curves.BeatCurve` that moves.
+    beat: float | BeatCurve
     level: float
 
     #: An optional slow swell, so a layer above the root breathes rather than
@@ -226,20 +229,30 @@ class BinauralPair:
 
     def render(self, span: Span) -> Stereo:
         """Render the pair over ``span``."""
-        left, right = sine_pair(span.t, self.carrier, self.beat, self.level)
+        if isinstance(self.beat, BeatCurve):
+            left, right = swept_pair(span.t, self.carrier, self.beat, self.level)
+        else:
+            left, right = sine_pair(span.t, self.carrier, self.beat, self.level)
         if self.swell is None:
             return left, right
         gain = self.swell.gain(span.t)
         return left * gain, right * gain
 
-    def snapped_to_loop(self, loop_seconds: float) -> tuple[Layer, tuple[str, ...]]:
+    def snapped_to_loop(
+        self, loop_seconds: float
+    ) -> tuple[Layer, tuple[str, ...]] | None:
         """
         Move both ears onto whole cycles, keeping the beat between them.
 
         Both ears have to land on whole cycles, not just the carrier, so the
         beat is snapped first — to an *even* multiple of ``1 / loop_seconds``,
         which is what makes ``carrier -/+ beat/2`` land on whole cycles too.
+
+        A swept beat declines: see :class:`ChordBed.snapped_to_loop` for why a
+        moving rate and a seamless loop do not go together.
         """
+        if isinstance(self.beat, BeatCurve):
+            return None
         half_cycles = max(1, round(self.beat * loop_seconds / 2.0))
         beat = 2.0 * half_cycles / loop_seconds
         carrier = snap_frequency(self.carrier, loop_seconds)
@@ -322,7 +335,11 @@ class ChordBed:
 
     events: tuple[ChordEvent, ...]
     root: float
-    beat: float
+
+    #: A fixed rate, or a :class:`~violet.dsp.curves.BeatCurve` that moves.
+    #: Every voice follows the same one, which is what keeps the mix to a
+    #: single beat however the harmony moves.
+    beat: float | BeatCurve
     level: float
     crossfade: float = 16.0
     breathing: Breathing = field(default_factory=Breathing)
@@ -412,7 +429,10 @@ class ChordBed:
 
                 for voice, freq in enumerate(frequencies):
                     envelope = self.level * gain * breaths[voice]
-                    voice_left, voice_right = sine_pair(t, freq, self.beat)
+                    if isinstance(self.beat, BeatCurve):
+                        voice_left, voice_right = swept_pair(t, freq, self.beat)
+                    else:
+                        voice_left, voice_right = sine_pair(t, freq, self.beat)
                     left += envelope * voice_left
                     right += envelope * voice_right
 
@@ -436,6 +456,8 @@ class ChordBed:
         join to crossfade.
         """
         if not tiles_loop(self.events, loop_seconds):
+            return None
+        if isinstance(self.beat, BeatCurve):
             return None
 
         half_cycles = max(1, round(self.beat * loop_seconds / 2.0))

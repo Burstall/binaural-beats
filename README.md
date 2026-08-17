@@ -309,6 +309,74 @@ Note that a seed changes nothing for the first half-minute of a render: every
 progression starts on the tonic and holds it for at least 38 seconds, so two
 seeds are bit-identical until the first crossfade.
 
+## A beat that moves
+
+A fixed rate is a compromise: fast enough to feel like something is happening,
+slow enough to sleep to, and therefore neither. The `descent` preset holds alpha
+for eight minutes, glides down through theta over the next seventeen, and spends
+the last twenty at delta.
+
+```sh
+uv run violet render descent --out tonight.flac
+```
+
+```toml
+beat = { shape = "exponential", at_minutes = [0, 8, 25, 45], hz = [10, 10, 2, 2] }
+```
+
+Times are in minutes and the key says so. `linear` moves by a constant number of
+hertz per second; `exponential` moves by a constant *ratio*, which is how pitch
+is heard — halving from 8 Hz to 4 sounds like the same size of step as halving
+from 4 to 2, where a straight line loiters at the top and then plunges.
+
+### The trap
+
+A tone whose frequency changes is **not** `sin(2π·f(t)·t)`. That expression says
+"the phase now is the frequency now times the whole elapsed time", which is only
+true if the frequency has always been that value. Phase is the *integral* of
+frequency.
+
+What makes this dangerous is how it fails. Not with a click — for a smooth glide
+the naive expression is perfectly smooth too, which is exactly why it survives a
+listen and ships. Differentiating its phase gives an instantaneous rate of
+**`f(t) + t·f′(t)`**, so the error grows with elapsed time and with how fast the
+curve is moving:
+
+| at | you asked for | naive gives |
+|---|---|---|
+| 10 s | 8.67 Hz | 7.33 Hz |
+| 30 s | 6.00 Hz | 2.00 Hz |
+| 40 s | 4.67 Hz | −0.67 Hz |
+| 60 s | 2.00 Hz | −6.00 Hz |
+
+Past the halfway point it goes negative, which swaps which ear leads. Forty-five
+minutes of that isn't a descent, it's a rate nobody chose. Where the curve does
+have a *step* in it, the naive form clicks as well — seventeen times the largest
+legitimate sample-to-sample move. Both failure modes have a test.
+
+### Why a closed form, not an accumulator
+
+The usual fix is `phase += 2π·f/sr` carried across blocks. That works, and it
+makes the oscillator stateful, which costs three things this package has been
+careful to keep: it must be rendered strictly in order, it accumulates rounding
+error over an hour, and rendering at two block sizes stops giving identical
+samples — summing a million numbers in chunks of a thousand isn't the same
+arithmetic as summing them in chunks of ten thousand.
+
+A piecewise-linear or piecewise-exponential curve has an integral in closed
+form, so it's evaluated directly from absolute time like everything else here.
+No state, no drift, and block-size invariance that's exact rather than close.
+
+Verified on the real 45-minute render: the beat measured by FFT at ten points
+from minute 1 to minute 44 tracks the curve to within **0.007 Hz**.
+
+### One thing it won't do
+
+A moving beat and a seamless loop are refused together. The rate at the end of a
+descent isn't the rate at the start, so however smooth the waveform is at the
+join, the pulse jumps. An honest "these two cannot coexist" beats a muddy
+compromise — a *flat* curve loops fine.
+
 ## Finding out for yourself
 
 The null condition is one parameter set to zero. Two files from the same
@@ -319,7 +387,7 @@ about the two files is identical. The ocean beds are *bit-identical*, and
 there's a test asserting it. That is as close to a placebo as audio gets.
 
 ```sh
-uv run violet trial start sleep-4hz --preset ocean --minutes 45
+uv run violet trial start sleep-4hz --preset descent --minutes 45
 uv run violet trial next sleep-4hz          # tells you which to play tonight
 uv run violet trial log sleep-4hz A --state 4 --note "fell asleep quickly"
 uv run violet trial status sleep-4hz        # progress, giving nothing away
@@ -369,7 +437,7 @@ gives the encoder more to spend bits on.
 ## Development
 
 ```sh
-uv run pytest                  # 435 tests, about a minute
+uv run pytest                  # 484 tests, about a minute
 uv run pytest --cov            # 99% covered, with a 97% floor that CI enforces
 uv run ruff check .
 uv run ruff format --check .
@@ -390,6 +458,7 @@ violet/
   tuning.py     frequency <-> note <-> cents <-> wavelength; just ratios
   harmony.py    chords as ratio sets, weighted walk, equal-power crossfades
   dsp/
+    curves.py   beat rates that move, and their phase integral in closed form
     osc.py      sine pairs
     noise.py    pink generators with persistent state
     filters.py  typed wrappers over scipy IIR, one state per channel
@@ -431,10 +500,7 @@ README and in `data/presets.toml` and nowhere in the Python.
 
 1. ~~**Blinded self-experiment mode.**~~ Done — see
    [Finding out for yourself](#finding-out-for-yourself).
-2. **Beat automation curves.** A 45-minute descent from alpha through theta to
-   delta is a far better sleep tool than any fixed rate. Needs integrated phase
-   (`phase += 2π·cumsum(f)/sr`) with the accumulator carried across blocks;
-   `2πft` produces a jump at every boundary.
+2. ~~**Beat automation curves.**~~ Done — see [A beat that moves](#a-beat-that-moves).
 3. **Real-time engine.** Swap the file sink for `sounddevice`. The engine is
    already block-streaming and stateful, so this is a new sink plus a callback.
 4. **Spatial movement, and why it fights the beat.** Orbiting the voices around

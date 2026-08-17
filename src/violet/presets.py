@@ -29,6 +29,7 @@ the literal frequency is its whole job.
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -36,13 +37,14 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 
 from violet import tuning
+from violet.dsp.curves import BeatCurve
 from violet.dsp.env import Lfo, plan_swells
 from violet.engine import LoopConfig, RenderConfig
 from violet.harmony import WalkConfig, plan_loop_progression, plan_progression
 from violet.layers import Air, BinauralPair, ChordBed, Layer, Ocean, Pedal
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterator
 
 __all__ = [
     "BANDS",
@@ -73,8 +75,35 @@ BANDS: dict[str, float] = {
 BUILTIN_PRESETS = Path(__file__).parent / "data" / "presets.toml"
 
 
-def resolve_beat(beat: str | float) -> float:
-    """Turn ``"theta"`` or ``4.0`` into a beat frequency in Hz."""
+def resolve_beat(
+    beat: str | float | Mapping[str, Any] | BeatCurve,
+) -> float | BeatCurve:
+    """
+    Turn ``"theta"``, ``4.0`` or a curve table into a beat rate.
+
+    A table becomes a :class:`~violet.dsp.curves.BeatCurve`::
+
+        beat = { shape = "exponential", at_minutes = [0, 8, 25], hz = [10, 10, 2] }
+
+    Times are in minutes, because a forty-five minute descent written in
+    seconds is a wall of four-digit numbers nobody can check by eye. The key
+    says so, to keep it from being mistaken for seconds.
+    """
+    if isinstance(beat, BeatCurve):
+        return beat
+    if isinstance(beat, Mapping):
+        table = dict(beat)
+        shape = table.pop("shape", "linear")
+        try:
+            at_minutes = tuple(float(v) for v in table.pop("at_minutes"))
+            rates = tuple(float(v) for v in table.pop("hz"))
+        except KeyError as error:
+            msg = f"a beat curve needs at_minutes and hz; missing {error}"
+            raise ValueError(msg) from None
+        if table:
+            msg = f"unknown keys in beat curve: {sorted(table)}"
+            raise ValueError(msg)
+        return BeatCurve.from_minutes(at_minutes, rates, shape=shape)
     if isinstance(beat, int | float):
         return float(beat)
     name = beat.strip().lower()
@@ -205,7 +234,9 @@ class Preset:
     name: str
     description: str
     base_hz: float
-    beat: float
+
+    #: A fixed rate in Hz, or a curve that moves over the render.
+    beat: float | BeatCurve
     layers: tuple[LayerSpec, ...]
 
     sample_rate: int = 44100
@@ -223,8 +254,17 @@ class Preset:
         if self.base_hz <= 0.0:
             msg = f"{self.name}: base frequency must be positive"
             raise ValueError(msg)
-        if self.beat < 0.0:
+        if isinstance(self.beat, float | int) and self.beat < 0.0:
             msg = f"{self.name}: beat must not be negative"
+            raise ValueError(msg)
+        if self.loop and isinstance(self.beat, BeatCurve) and self.beat.moves:
+            msg = (
+                f"{self.name}: a moving beat and a seamless loop do not go "
+                f"together. The rate at the end of the curve "
+                f"({self.beat.end_hz:g} Hz) is not the rate at the start "
+                f"({self.beat.start_hz:g} Hz), so however smooth the waveform is "
+                f"at the join, the pulse jumps. Pick one."
+            )
             raise ValueError(msg)
         if self.minutes <= 0.0:
             msg = f"{self.name}: minutes must be positive"
@@ -247,7 +287,7 @@ class Preset:
         self,
         *,
         minutes: float | None = None,
-        beat: float | None = None,
+        beat: float | BeatCurve | None = None,
         base_hz: float | None = None,
         seed: int | None = None,
         loop: bool | None = None,

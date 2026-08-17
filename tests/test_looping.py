@@ -225,8 +225,11 @@ def test_a_snapped_pair_keeps_both_ears_on_whole_cycles() -> None:
     ``carrier -/+ beat/2`` lands on whole cycles as well.
     """
     pair = BinauralPair(carrier=ROOT, beat=7.83, level=0.3)
-    snapped, notes = pair.snapped_to_loop(LOOP)
+    result = pair.snapped_to_loop(LOOP)
+    assert result is not None
+    snapped, notes = result
     assert isinstance(snapped, BinauralPair)
+    assert isinstance(snapped.beat, float)
 
     half = snapped.beat / 2
     for freq in (snapped.carrier - half, snapped.carrier + half):
@@ -238,7 +241,9 @@ def test_a_snapped_pair_keeps_both_ears_on_whole_cycles() -> None:
 
 def test_a_snapped_pair_keeps_an_already_exact_beat() -> None:
     """4 Hz over a 120-second loop is 480 cycles. Nothing to change."""
-    snapped, _ = BinauralPair(carrier=ROOT, beat=4.0, level=0.3).snapped_to_loop(LOOP)
+    result = BinauralPair(carrier=ROOT, beat=4.0, level=0.3).snapped_to_loop(LOOP)
+    assert result is not None
+    snapped, _ = result
     assert isinstance(snapped, BinauralPair)
     assert snapped.beat == 4.0
 

@@ -6,10 +6,13 @@ of absolute sample indices, phase follows from the time value itself, so a
 tone rendered across ten blocks is the same tone rendered in one. There is no
 per-block phase to reset and therefore no click to accidentally introduce.
 
-Time-varying frequency is the exception, and cannot be handled this way:
-``sin(2*pi*f(t)*t)`` is not a tone that sweeps, it is a tone whose phase jumps
-about. That needs an integrated phase accumulator carried across blocks, and
-arrives with the beat automation curves (roadmap item 2).
+Time-varying frequency is the exception, and cannot be handled the same way.
+``sin(2*pi*f(t)*t)`` does not sweep at ``f(t)``; it sweeps at
+``f(t) + t*f'(t)``, which is a different rate and sounds entirely plausible
+while being wrong. Phase is the *integral* of frequency, and :func:`swept_pair`
+gets it from :class:`violet.dsp.curves.BeatCurve`, which evaluates that integral
+in closed form — so a sweeping tone stays as stateless and as exactly block
+invariant as a fixed one.
 
 One beat per mix
 ----------------
@@ -34,8 +37,9 @@ from violet._types import TAU
 
 if TYPE_CHECKING:
     from violet._types import FloatArray, Stereo
+    from violet.dsp.curves import BeatCurve
 
-__all__ = ["sine", "sine_pair"]
+__all__ = ["sine", "sine_pair", "swept_pair"]
 
 
 def sine(
@@ -80,3 +84,42 @@ def sine_pair(
         )
         raise ValueError(msg)
     return sine(t, freq - half, level), sine(t, freq + half, level)
+
+
+def swept_pair(
+    t: FloatArray,
+    freq: float,
+    curve: BeatCurve,
+    level: float = 1.0,
+) -> Stereo:
+    """
+    One binaural voice whose beat rate follows ``curve``.
+
+    The carrier stays put and the two ears move symmetrically around it, so the
+    pitch you hear does not drift while the pulse slows. Each ear's phase is the
+    carrier's phase plus or minus half the beat's *integrated* phase::
+
+        left = sin(2 * pi * (freq * t - cycles(t) / 2))
+        right = sin(2 * pi * (freq * t + cycles(t) / 2))
+
+    Not ``freq -/+ curve.at(t)/2`` inside the usual expression. That is the
+    mistake this function exists to prevent, and it is a quiet one: for a smooth
+    curve it produces a perfectly smooth signal at ``f(t) + t*f'(t)``, which is
+    not the rate you asked for and eventually not even the right sign. See
+    :mod:`violet.dsp.curves`.
+    """
+    low, high = curve.span
+    if freq - high / 2.0 <= 0.0:
+        msg = (
+            f"a beat reaching {high:g} Hz around {freq:g} Hz would put the left "
+            f"ear at {freq - high / 2.0:g} Hz; the carrier must exceed half the "
+            f"fastest rate in the curve"
+        )
+        raise ValueError(msg)
+    del low
+
+    carrier_phase = TAU * freq * t
+    half_beat_phase = TAU * curve.cycles(t) / 2.0
+    left: FloatArray = level * np.sin(carrier_phase - half_beat_phase)
+    right: FloatArray = level * np.sin(carrier_phase + half_beat_phase)
+    return left, right

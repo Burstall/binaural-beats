@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any
 
 from scipy import stats
 
+from violet.dsp.curves import BeatCurve
 from violet.engine import render_to_file
 
 if TYPE_CHECKING:
@@ -107,6 +108,30 @@ _SEAL_HEADER = """\
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+#: A rate as it sits in the state file: a number, or a curve's points.
+BeatJson = float | dict[str, object]
+
+
+def _beat_to_json(beat: float | BeatCurve) -> BeatJson:
+    """A rate as JSON. Curves keep their points, so a trial stays reproducible."""
+    if isinstance(beat, BeatCurve):
+        return {
+            "shape": beat.shape,
+            "points": [list(point) for point in beat.points],
+        }
+    return beat
+
+
+def _beat_from_json(value: BeatJson) -> float | BeatCurve:
+    """The inverse."""
+    if isinstance(value, dict):
+        raw = value["points"]
+        assert isinstance(raw, list)  # noqa: S101 - our own state file
+        points = tuple((float(at), float(hz)) for at, hz in raw)
+        return BeatCurve(points=points, shape=str(value["shape"]))  # type: ignore[arg-type]
+    return float(value)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +188,10 @@ class Trial:
     directory: Path
     name: str
     preset: str
-    beat: float
+
+    #: The rate under test: a number, or a curve that moves. Either way the
+    #: other arm is flat zero, which is the whole design.
+    beat: float | BeatCurve
     base_hz: float
     seed: int
     minutes: float
@@ -198,6 +226,13 @@ class Trial:
         """Whether this trial has been unblinded."""
         return self.revealed_at is not None
 
+    @property
+    def beat_label(self) -> str:
+        """How to name the rate under test, curve or not."""
+        if isinstance(self.beat, BeatCurve):
+            return self.beat.describe()
+        return f"{self.beat:g} Hz"
+
     # -- creation and loading ----------------------------------------------
 
     @classmethod
@@ -216,10 +251,13 @@ class Trial:
         renders are otherwise the same configuration and the same seed, so the
         progression, the wave events and the noise are identical between them.
         """
-        if preset.beat <= 0.0:
+        fastest = (
+            preset.beat.span[1] if isinstance(preset.beat, BeatCurve) else preset.beat
+        )
+        if fastest <= 0.0:
             msg = (
-                f"a trial needs a preset with a beat to test; {preset.name!r} has "
-                f"beat={preset.beat:g}, which is already the null condition"
+                f"a trial needs a preset with a beat to test; {preset.name!r} "
+                f"never rises above 0 Hz, which is already the null condition"
             )
             raise ValueError(msg)
         if directory.exists() and any(directory.iterdir()):
@@ -257,7 +295,9 @@ class Trial:
                 subtype="PCM_16",
             )
 
-        _seal({"beat_arm": beat_arm, "beat": preset.beat}, trial.sealed_path)
+        # The arm is all this needs to hold. What the beat *is* already sits in
+        # the visible state; which arm has it is the only secret.
+        _seal({"beat_arm": beat_arm}, trial.sealed_path)
         trial.save()
         return trial
 
@@ -270,6 +310,7 @@ class Trial:
             raise FileNotFoundError(msg)
         fields = json.loads(path.read_text(encoding="utf-8"))
         fields["scale"] = tuple(fields["scale"])
+        fields["beat"] = _beat_from_json(fields["beat"])
         return cls(directory=directory, **fields)
 
     def save(self) -> None:
@@ -277,7 +318,7 @@ class Trial:
         fields = {
             "name": self.name,
             "preset": self.preset,
-            "beat": self.beat,
+            "beat": _beat_to_json(self.beat),
             "base_hz": self.base_hz,
             "seed": self.seed,
             "minutes": self.minutes,

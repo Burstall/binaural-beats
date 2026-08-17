@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from violet import __version__, tuning
+from violet.dsp.curves import BeatCurve
 from violet.engine import render_to_file
 from violet.layers import ChordBed, Ocean
 from violet.presets import Preset, load_library, resolve_beat
@@ -219,11 +220,20 @@ def _describe(preset: Preset) -> None:
     beat = preset.beat
     carrier = preset.carrier_hz
     echo("")
-    echo(f"beat                {beat:g} Hz")
-    if beat > 0:
+    if isinstance(beat, BeatCurve):
+        echo(f"beat curve          {beat.describe()}")
+        low, high = beat.span
+        echo(
+            f"  ears sweep        "
+            f"{carrier - high / 2:.3f}-{carrier - low / 2:.3f} / "
+            f"{carrier + low / 2:.3f}-{carrier + high / 2:.3f} Hz"
+        )
+    elif beat > 0:
+        echo(f"beat                {beat:g} Hz")
         left, right = carrier - beat / 2, carrier + beat / 2
         echo(f"  ears at           {left:.3f} / {right:.3f} Hz")
     else:
+        echo(f"beat                {beat:g} Hz")
         echo("  ears identical    no interaural difference, so no beat at all")
     echo(f"length              {preset.minutes:g} min at {preset.sample_rate} Hz")
     echo(f"seed                {preset.seed}")
@@ -376,7 +386,7 @@ def trial_status(
     """Show progress without giving anything away."""
     trial = _open_trial(directory, name)
     counts = trial.counts()
-    echo(f"trial {trial.name} — {trial.preset}, {trial.beat:g} Hz against silence")
+    echo(f"trial {trial.name} — {trial.preset}, {trial.beat_label} against silence")
     echo(f"  created   {trial.created}")
     echo("  sessions  " + ", ".join(f"{a} {counts[a]}" for a in ARMS))
     echo(f"  revealed  {trial.revealed_at or 'no'}")
@@ -413,7 +423,7 @@ def trial_reveal(
         raise _fail(str(error)) from None
 
     echo(f"trial {trial.name} — unblinded\n")
-    echo(f"  {result.beat_arm} carried the {trial.beat:g} Hz beat")
+    echo(f"  {result.beat_arm} carried the beat ({trial.beat_label})")
     echo(f"  {result.null_arm} had none\n")
     echo(
         f"  with beat     n={result.n_beat}  mean {result.mean_beat:.2f}  "
@@ -454,7 +464,7 @@ def trial_list(*, directory: TrialsDir = Path("trials")) -> None:
         counts = trial.counts()
         state = "revealed" if trial.revealed else "blind"
         echo(
-            f"  {trial.name:<16} {trial.preset:<12} {trial.beat:g} Hz  "
+            f"  {trial.name:<16} {trial.preset:<12} {trial.beat_label:<24} "
             + ", ".join(f"{a} {counts[a]}" for a in ARMS)
             + f"  [{state}]"
         )
