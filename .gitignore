@@ -25,6 +25,9 @@ build/
 coverage.xml
 htmlcov/
 
+# blinded trials — large uncompressed renders, and a sealed mapping that is
+# nobody else's business
+trials/
+
 # os
 .DS_Store
-trials/
