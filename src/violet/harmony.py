@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -59,7 +60,7 @@ import numpy as np
 from violet.tuning import JUST_SEMITONES, implied_reference, note_of
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping
     from fractions import Fraction
 
     from violet._types import FloatArray
@@ -71,7 +72,9 @@ __all__ = [
     "ChordEvent",
     "WalkConfig",
     "crossfade_gain",
+    "plan_loop_progression",
     "plan_progression",
+    "tiles_loop",
     "validate_transitions",
 ]
 
@@ -261,6 +264,25 @@ def validate_transitions(
         raise ValueError(msg)
 
 
+def _step(
+    current: str,
+    walk: WalkConfig,
+    rng: np.random.Generator,
+    allowed: Collection[str] | None = None,
+) -> str:
+    """Draw the next chord. One uniform draw, always, whatever the filter."""
+    moves = walk.transitions[current]
+    if allowed is not None:
+        moves = tuple(move for move in moves if move[0] in allowed)
+        if not moves:
+            msg = f"no move from {current!r} reaches any of {sorted(allowed)}"
+            raise ValueError(msg)
+    targets, weights = zip(*moves, strict=True)
+    probabilities = np.array(weights, dtype=float)
+    probabilities /= probabilities.sum()
+    return str(rng.choice(targets, p=probabilities))
+
+
 def plan_progression(
     total_seconds: float,
     rng: np.random.Generator,
@@ -293,10 +315,7 @@ def plan_progression(
                 fade_out=True,
             )
         )
-        targets, weights = zip(*walk.transitions[current], strict=True)
-        probabilities = np.array(weights, dtype=float)
-        probabilities /= probabilities.sum()
-        current = str(rng.choice(targets, p=probabilities))
+        current = _step(current, walk, rng)
         clock += held
 
     last = events[-1]
@@ -308,6 +327,92 @@ def plan_progression(
         fade_out=False,
     )
     return tuple(events)
+
+
+def plan_loop_progression(
+    loop_seconds: float,
+    rng: np.random.Generator,
+    config: WalkConfig | None = None,
+) -> tuple[ChordEvent, ...]:
+    """
+    A progression that closes: the chord at the end leads back into the first.
+
+    Three things have to be true for a progression to survive being played on
+    repeat, and none of them is true of the ordinary walk.
+
+    The chords have to *tile* the loop exactly, so the last one ends where the
+    first begins. The walk draws lengths at random, which will not add up, so
+    every length is scaled by the few percent needed to make them. A 50-second
+    chord becoming a 52-second chord is not a musical event.
+
+    The last chord has to be able to move to the first one, which the graph
+    does not guarantee — so the final step is drawn from the moves that can.
+
+    And the first chord has to fade *in*, from the last. In a straight render
+    the opening chord is simply there; in a loop it is arriving from the chord
+    that just wrapped around, and the join is an ordinary chord change like any
+    other.
+    """
+    walk = config or WalkConfig()
+    if loop_seconds < walk.min_seconds * 2.0:
+        msg = (
+            f"a loop of {loop_seconds:g} s cannot hold two chords of at least "
+            f"{walk.min_seconds:g} s; the progression would have nowhere to go"
+        )
+        raise ValueError(msg)
+
+    reaches_start = {
+        name
+        for name, moves in walk.transitions.items()
+        if any(target == walk.start for target, _ in moves)
+    }
+
+    held: list[float] = []
+    names: list[str] = [walk.start]
+    clock = 0.0
+    current = walk.start
+
+    while True:
+        length = float(rng.uniform(walk.min_seconds, walk.max_seconds))
+        held.append(length)
+        clock += length
+        if clock >= loop_seconds:
+            break
+        # The chord after this one might be the last, so keep the walk on
+        # ground from which it can still get home.
+        remaining = loop_seconds - clock
+        final = remaining < walk.max_seconds
+        current = _step(current, walk, rng, reaches_start if final else None)
+        names.append(current)
+
+    scale = loop_seconds / clock
+    events: list[ChordEvent] = []
+    start = 0.0
+    for index, (name, length) in enumerate(zip(names, held, strict=True)):
+        end = loop_seconds if index == len(held) - 1 else start + length * scale
+        events.append(ChordEvent(chord=walk.chords[name], start=start, end=end))
+        start = end
+
+    return tuple(events)
+
+
+def tiles_loop(
+    events: tuple[ChordEvent, ...],
+    loop_seconds: float,
+    tolerance: float = 1e-9,
+) -> bool:
+    """Whether ``events`` cover exactly ``[0, loop_seconds]`` with no seam."""
+    if not events:
+        return False
+    if abs(events[0].start) > tolerance:
+        return False
+    if abs(events[-1].end - loop_seconds) > tolerance:
+        return False
+    if not all(event.fade_in and event.fade_out for event in events):
+        return False
+    return all(
+        abs(before.end - after.start) <= tolerance for before, after in pairwise(events)
+    )
 
 
 def crossfade_gain(
