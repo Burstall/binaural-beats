@@ -30,9 +30,9 @@ from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 
-from violet.dsp.env import Breathing, Swell, swell_envelope
+from violet.dsp.env import Breathing, Lfo, Swell, swell_envelope
 from violet.dsp.filters import FilterDesign
-from violet.dsp.noise import PinkNoise, spawn_seeds
+from violet.dsp.noise import KelletPink, OnePole, PinkNoise, spawn_seeds
 from violet.dsp.osc import sine, sine_pair
 from violet.harmony import crossfade_gain, tiles_loop
 
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from violet.harmony import ChordEvent
 
 __all__ = [
+    "Air",
     "BinauralPair",
     "ChordBed",
     "Layer",
@@ -207,6 +208,10 @@ class BinauralPair:
     beat: float
     level: float
 
+    #: An optional slow swell, so a layer above the root breathes rather than
+    #: sitting still. Long periods, and never all the way down to silence.
+    swell: Lfo | None = None
+
     stateful: ClassVar[bool] = False
 
     def __post_init__(self) -> None:
@@ -216,12 +221,16 @@ class BinauralPair:
 
     @property
     def peak(self) -> float:
-        """One sine per ear, so the bound is the level itself."""
-        return self.level
+        """One sine per ear, so the bound is the level at its loudest."""
+        return self.level * (1.0 if self.swell is None else self.swell.high)
 
     def render(self, span: Span) -> Stereo:
         """Render the pair over ``span``."""
-        return sine_pair(span.t, self.carrier, self.beat, self.level)
+        left, right = sine_pair(span.t, self.carrier, self.beat, self.level)
+        if self.swell is None:
+            return left, right
+        gain = self.swell.gain(span.t)
+        return left * gain, right * gain
 
     def snapped_to_loop(self, loop_seconds: float) -> tuple[Layer, tuple[str, ...]]:
         """
@@ -242,7 +251,10 @@ class BinauralPair:
             notes.append(
                 f"carrier {self.carrier:.6g} -> {carrier:.6g} Hz to close the loop"
             )
-        snapped = BinauralPair(carrier=carrier, beat=beat, level=self.level)
+        swell = None if self.swell is None else self.swell.snapped_to_loop(loop_seconds)
+        snapped = BinauralPair(
+            carrier=carrier, beat=beat, level=self.level, swell=swell
+        )
         return snapped, tuple(notes)
 
 
@@ -445,6 +457,69 @@ class ChordBed:
             loop_seconds=loop_seconds,
         )
         return snapped, tuple(notes)
+
+
+@dataclass(slots=True)
+class Air:
+    """
+    A quiet low-passed noise bed, the same in both ears.
+
+    Not the ocean. This is the sound of a room rather than the sound of water:
+    a soft floor under the tones that stops a mix of pure sines from feeling
+    like a test signal. Low-passed hard, so it sits below the harmony instead
+    of over it.
+
+    Mono, and unlike the ocean that is fine. Identical in both ears means no
+    interaural difference at all, so it adds nothing the brainstem can read as
+    a beat and nothing that competes with the one in the harmony. It is not
+    notched, because at a 140 Hz corner there is nothing left up at the carrier
+    to notch.
+    """
+
+    level: float
+    sample_rate: int
+    cutoff_hz: float = 141.7974
+    seed: int = 7
+
+    #: Measured bound at ``level = 1``, the same way the ocean's is.
+    peak_estimate: float = 0.35
+
+    stateful: ClassVar[bool] = True
+
+    _pink: KelletPink = field(init=False, repr=False)
+    _lowpass: OnePole = field(init=False, repr=False)
+    _next_index: int = field(init=False, default=0, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.level < 0.0:
+            msg = f"level must not be negative, got {self.level!r}"
+            raise ValueError(msg)
+        self._pink = KelletPink(self.seed, self.level)
+        self._lowpass = OnePole(self.sample_rate, self.cutoff_hz)
+        self._next_index = 0
+
+    @property
+    def peak(self) -> float:
+        """Practical bound on the bed's contribution."""
+        return self.level * self.peak_estimate
+
+    def reset(self) -> None:
+        """Restart the generator and clear the filter."""
+        self._pink.reset()
+        self._lowpass.reset()
+        self._next_index = 0
+
+    def render(self, span: Span) -> Stereo:
+        """Render the bed over ``span``, the same array to both ears."""
+        if span.start != self._next_index:
+            msg = (
+                f"Air must be rendered in order: expected the block starting at "
+                f"sample {self._next_index}, got {span.start}"
+            )
+            raise ValueError(msg)
+        bed = self._lowpass.process(self._pink.block(span.n))
+        self._next_index = span.stop
+        return bed, bed
 
 
 @dataclass(slots=True)

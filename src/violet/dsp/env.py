@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 __all__ = [
     "SWELL_TAIL_SECONDS",
     "Breathing",
+    "Lfo",
     "Swell",
     "fade_envelope",
     "fade_length",
@@ -110,6 +111,28 @@ def slow_lfo(
     swing = 0.5 + 0.5 * np.sin(TAU * t / period + phase)
     out: FloatArray = low + (high - low) * swing
     return out
+
+
+@dataclass(frozen=True, slots=True)
+class Lfo:
+    """One slow oscillation, as a value rather than four loose arguments."""
+
+    period: float
+    low: float = 0.55
+    high: float = 1.0
+    phase: float = 0.0
+
+    def gain(self, t: FloatArray) -> FloatArray:
+        """The envelope at absolute times ``t``."""
+        return slow_lfo(t, self.period, self.low, self.high, self.phase)
+
+    def snapped_to_loop(self, loop_seconds: float) -> Lfo:
+        """The nearest period that divides the loop a whole number of times."""
+        if loop_seconds <= 0.0:
+            msg = f"loop length must be positive, got {loop_seconds!r}"
+            raise ValueError(msg)
+        cycles = max(1, round(loop_seconds / self.period))
+        return replace(self, period=loop_seconds / cycles)
 
 
 @dataclass(frozen=True, slots=True)

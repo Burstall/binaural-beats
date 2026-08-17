@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from violet import __version__
+from violet import __version__, tuning
+from violet.engine import render_to_file
+from violet.layers import ChordBed, Ocean
+from violet.presets import Preset, load_library, resolve_beat
 
 app = typer.Typer(
     name="violet",
@@ -15,10 +20,12 @@ app = typer.Typer(
     add_completion=False,
 )
 
+echo = typer.echo
+
 
 def _version(*, value: bool) -> None:
     if value:
-        typer.echo(f"violet {__version__}")
+        echo(f"violet {__version__}")
         raise typer.Exit
 
 
@@ -37,6 +44,213 @@ VersionFlag = Annotated[
 @app.callback()
 def main(*, version: VersionFlag = False) -> None:
     """Generate long-form binaural and ambient audio."""
+
+
+# ---------------------------------------------------------------------------
+# shared options
+# ---------------------------------------------------------------------------
+
+PresetsOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--presets",
+        help="A TOML file of your own presets, overriding the built-ins by name.",
+        exists=True,
+        dir_okay=False,
+    ),
+]
+
+
+def _library(paths: Path | None) -> object:
+    return load_library(paths) if paths else load_library()
+
+
+def _fail(message: str) -> typer.Exit:
+    echo(f"error: {message}", err=True)
+    return typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------
+
+
+@app.command("presets")
+def list_presets(presets: PresetsOption = None) -> None:
+    """List the available presets."""
+    library = _library(presets)
+    width = max(len(preset.name) for preset in library)  # type: ignore[attr-defined]
+    for preset in library:  # type: ignore[attr-defined]
+        echo(f"  {preset.name:<{width}}  {preset.description}")
+
+
+@app.command()
+def show(
+    name: Annotated[str, typer.Argument(help="Preset name.")],
+    presets: PresetsOption = None,
+) -> None:
+    """Show what a preset would render, without rendering it."""
+    try:
+        preset = _library(presets)[name]  # type: ignore[index]
+    except KeyError as error:
+        raise _fail(str(error).strip("\"'")) from None
+    _describe(preset)
+
+
+@app.command()
+def tune(
+    frequency: Annotated[float, typer.Argument(help="A frequency in Hz.")],
+    a4: Annotated[
+        float, typer.Option("--a4", help="Reference for naming notes.")
+    ] = tuning.A4_STANDARD,
+) -> None:
+    """Show the tuning and colour arithmetic for a frequency."""
+    try:
+        echo(tuning.describe(frequency, a4))
+    except ValueError as error:
+        raise _fail(str(error)) from None
+
+
+@app.command()
+def render(  # noqa: PLR0913 - every one of these is a real knob
+    name: Annotated[str, typer.Argument(help="Preset name.")] = "ocean",
+    *,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Output file; .wav or .flac."),
+    ] = None,
+    minutes: Annotated[
+        float | None, typer.Option("--minutes", "-m", help="Length in minutes.")
+    ] = None,
+    beat: Annotated[
+        str | None,
+        typer.Option("--beat", "-b", help="Beat in Hz, or delta/theta/alpha/..."),
+    ] = None,
+    base: Annotated[
+        float | None,
+        typer.Option("--base", help="Your base frequency in Hz."),
+    ] = None,
+    seed: Annotated[
+        int | None, typer.Option("--seed", help="Seed for the progression.")
+    ] = None,
+    loop: Annotated[
+        bool | None,
+        typer.Option("--loop/--no-loop", help="Close the render into a loop."),
+    ] = None,
+    block: Annotated[
+        float | None,
+        typer.Option("--block", help="Block size in seconds. Affects memory only."),
+    ] = None,
+    subtype: Annotated[
+        str | None,
+        typer.Option("--subtype", help="Sample format, e.g. PCM_16, PCM_24."),
+    ] = None,
+    presets: PresetsOption = None,
+    quiet: Annotated[bool, typer.Option("--quiet", "-q")] = False,
+) -> None:
+    """Render a preset to a WAV or FLAC file."""
+    try:
+        preset: Preset = _library(presets)[name]  # type: ignore[index]
+    except KeyError as error:
+        raise _fail(str(error).strip("\"'")) from None
+
+    try:
+        preset = preset.with_overrides(
+            minutes=minutes,
+            beat=None if beat is None else resolve_beat(beat),
+            base_hz=base,
+            seed=seed,
+            loop=loop,
+            block_seconds=block,
+        )
+        layers = preset.build_layers()
+        config = preset.render_config()
+    except ValueError as error:
+        raise _fail(str(error)) from None
+
+    destination = out or Path(f"{preset.name}.flac")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if not quiet:
+        _describe(preset)
+        echo(f"\nrendering to {destination} ...")
+
+    started = time.perf_counter()
+    try:
+        result = render_to_file(layers, config, destination, subtype=subtype)
+    except ValueError as error:
+        raise _fail(str(error)) from None
+    elapsed = time.perf_counter() - started
+
+    if quiet:
+        return
+
+    for note in result.notes:
+        echo(f"  note      {note}")
+    echo(
+        f"  peak      {result.peak:.3f} ({result.peak_dbfs:+.1f} dBFS), "
+        f"{result.clipped} clipped"
+    )
+    if result.loop_crossfade_frames:
+        echo(f"  loop fold {result.loop_crossfade_frames / result.sample_rate:.0f} s")
+    echo(
+        f"  wrote     {destination} — {result.seconds / 60:.2f} min in "
+        f"{elapsed:.1f} s ({result.seconds / max(elapsed, 1e-9):.0f}x realtime)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# reporting
+# ---------------------------------------------------------------------------
+
+
+def _describe(preset: Preset) -> None:
+    echo(f"{preset.name} — {preset.description}\n")
+    echo(tuning.describe(preset.base_hz))
+
+    beat = preset.beat
+    carrier = preset.carrier_hz
+    echo("")
+    echo(f"beat                {beat:g} Hz")
+    if beat > 0:
+        left, right = carrier - beat / 2, carrier + beat / 2
+        echo(f"  ears at           {left:.3f} / {right:.3f} Hz")
+    else:
+        echo("  ears identical    no interaural difference, so no beat at all")
+    echo(f"length              {preset.minutes:g} min at {preset.sample_rate} Hz")
+    echo(f"seed                {preset.seed}")
+    if preset.loop:
+        echo(f"loop                yes, {preset.loop_crossfade:g} s fold if needed")
+
+    echo("\nlayers")
+    for layer in preset.build_layers():
+        echo(f"  {_layer_line(layer, preset)}")
+
+
+def _layer_line(layer: object, preset: Preset) -> str:
+    match layer:
+        case ChordBed():
+            numerals = " ".join(
+                event.chord.numeral
+                for event in layer.events
+                if event.start < preset.seconds
+            )
+            names = " ".join(layer.events[0].chord.note_labels(layer.root))
+            return (
+                f"chords    level {layer.level:.3f}, opens on "
+                f"{layer.events[0].chord.numeral} ({names})\n"
+                f"            {numerals}"
+            )
+        case Ocean():
+            return (
+                f"ocean     level {layer.level:.3f}, {len(layer.swells)} waves, "
+                f"notched at {layer.notch_hz:.1f} Hz"
+            )
+        case _:
+            described = getattr(layer, "carrier", None) or getattr(layer, "freq", None)
+            kind = type(layer).__name__.lower()
+            where = f" at {described:.3f} Hz" if described else ""
+            return f"{kind:<9} level {layer.level:.3f}{where}"  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":  # pragma: no cover

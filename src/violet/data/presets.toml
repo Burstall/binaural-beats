@@ -1,0 +1,197 @@
+# Built-in presets.
+#
+# This file is data, and it is where the base frequency lives. No module in
+# the package contains one — see tests/test_architecture.py, which fails if
+# that ever stops being true.
+#
+# Copy any of these into a file of your own and pass it with --presets to
+# override or extend. Reusing a name replaces the built-in.
+#
+# Ratios are relative to the *carrier*: the base frequency shifted by whole
+# octaves into the 250-520 Hz binaural window. The pedal is the exception and
+# sounds the base itself.
+
+# ---------------------------------------------------------------------------
+# tones — reference/binaural_e_violet.py
+#
+# The minimal version. One binaural pair, one mono drone underneath at the
+# literal base frequency. Nothing else.
+# ---------------------------------------------------------------------------
+[tones]
+description = "A single binaural pair over a mono sub drone."
+base_hz = 83.949
+beat = "theta"
+sample_rate = 44100
+minutes = 20.0
+ceiling = 0.89
+fade_seconds = 8.0
+fade_denominator = 4
+
+[[tones.layer]]
+kind = "pair"
+level = 0.30
+
+[[tones.layer]]
+kind = "pedal"
+level = 0.09
+
+# ---------------------------------------------------------------------------
+# layered — reference/binaural_layered.py
+#
+# Fuller, without touching the waveform. An octave and a fifth as separate
+# pairs sharing the same detune, each breathing on its own slow cycle, plus a
+# noise floor. Harmonic n of a detuned pair beats at n times the rate, so a
+# richer waveform would smear the percept; more sine pairs do not.
+# ---------------------------------------------------------------------------
+[layered]
+description = "Root, octave and fifth as separate pairs, over a noise floor."
+base_hz = 83.949
+beat = "theta"
+sample_rate = 44100
+minutes = 15.0
+gain = 0.82
+fade_seconds = 12.0
+fade_denominator = 4
+
+[[layered.layer]]
+kind = "pair"
+ratio = 1.0
+level = 0.22
+
+[[layered.layer]]
+kind = "pair"
+ratio = 2.0
+level = 0.085
+swell = { period = 70.0, low = 0.55, high = 1.0 }
+
+[[layered.layer]]
+kind = "pair"
+ratio = 1.5
+level = 0.055
+swell = { period = 110.0, low = 0.40, high = 1.0, phase = 1.7 }
+
+[[layered.layer]]
+kind = "pedal"
+level = 0.085
+
+[[layered.layer]]
+kind = "air"
+level = 0.06
+cutoff_hz = 141.7974
+
+# ---------------------------------------------------------------------------
+# ocean — reference/ocean_chords_e.py
+#
+# The long-form piece. A pedal that never moves, four-voice chords wandering
+# a weighted graph above it, and a decorrelated noise bed notched at the
+# carrier so the surf cannot mask the beat.
+#
+# 32 kHz rather than 44.1: nothing here has energy above 8 kHz worth the
+# bytes, and an hour is a large file.
+# ---------------------------------------------------------------------------
+[ocean]
+description = "Ocean bed, slow modal chords, continuous pedal. The long one."
+base_hz = 83.949
+beat = "theta"
+sample_rate = 32000
+minutes = 30.0
+seed = 5
+gain = 1.25
+fade_seconds = 22.0
+fade_denominator = 5
+
+[[ocean.layer]]
+kind = "chords"
+level = 0.070
+crossfade = 16.0
+min_seconds = 38.0
+max_seconds = 62.0
+
+[[ocean.layer]]
+kind = "pedal"
+level = 0.080
+
+[[ocean.layer]]
+kind = "ocean"
+level = 0.42
+q = 2.0
+dark_hz = 520.0
+bright_hz = [900.0, 6500.0]
+set_seconds = [85.0, 125.0]
+
+# ---------------------------------------------------------------------------
+# sleep — a slower ocean, for lying still in the dark
+# ---------------------------------------------------------------------------
+[sleep]
+description = "The ocean at a delta rate, longer and with the surf closer."
+base_hz = 83.949
+beat = "delta"
+sample_rate = 32000
+minutes = 45.0
+seed = 12
+gain = 1.25
+fade_seconds = 22.0
+fade_denominator = 5
+
+[[sleep.layer]]
+kind = "chords"
+level = 0.070
+
+[[sleep.layer]]
+kind = "pedal"
+level = 0.080
+
+[[sleep.layer]]
+kind = "ocean"
+level = 0.55
+
+# ---------------------------------------------------------------------------
+# ocean-loop — the same piece, closed so it can repeat indefinitely
+#
+# Five minutes that join onto themselves. The chord progression is planned to
+# close, the tones are snapped onto whole cycles, and only the noise is
+# crossfaded. Put it on repeat and there is nothing to hear at the join.
+# ---------------------------------------------------------------------------
+[ocean-loop]
+description = "A five-minute ocean that plays on repeat with no seam."
+base_hz = 83.949
+beat = "theta"
+sample_rate = 32000
+minutes = 5.0
+seed = 5
+gain = 1.25
+loop = true
+loop_crossfade = 12.0
+
+[[ocean-loop.layer]]
+kind = "chords"
+level = 0.070
+
+[[ocean-loop.layer]]
+kind = "pedal"
+level = 0.080
+
+[[ocean-loop.layer]]
+kind = "ocean"
+level = 0.42
+
+# ---------------------------------------------------------------------------
+# tones-loop — the plain tones, closed. No crossfade needed at all: every
+# layer is a fixed frequency, so every layer can be made exactly periodic.
+# ---------------------------------------------------------------------------
+[tones-loop]
+description = "A ten-minute tone loop, mathematically seamless."
+base_hz = 83.949
+beat = "theta"
+sample_rate = 44100
+minutes = 10.0
+ceiling = 0.89
+loop = true
+
+[[tones-loop.layer]]
+kind = "pair"
+level = 0.30
+
+[[tones-loop.layer]]
+kind = "pedal"
+level = 0.09

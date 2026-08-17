@@ -16,6 +16,7 @@ would be.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -27,6 +28,7 @@ from violet.dsp.env import plan_swells
 from violet.engine import ArraySink, RenderConfig, loop_length, render, render_to_file
 from violet.harmony import plan_progression
 from violet.layers import BinauralPair, ChordBed, Layer, Ocean, Pedal
+from violet.presets import load_library
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -203,6 +205,98 @@ def test_headroom_rule_differs_from_the_prototype_at_high_levels(
     # And ours is still safe without the unnecessary attenuation.
     assert result.peak < 0.95
     assert result.clipped == 0
+
+
+# ---------------------------------------------------------------------------
+# prototype 2, layered (stage 6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("beat", "seconds"), [(4.0, 3.0), (7.83, 2.5), (2.0, 30.0)])
+def test_prototype_two_parity(
+    tmp_path: Path,
+    reference_layered: ModuleType,
+    beat: float,
+    seconds: float,
+) -> None:
+    """
+    The `layered` preset, against the script it came from.
+
+    Includes the air bed, whose economy pink filter the prototype ran as a
+    Python loop over every sample and this runs as three parallel one-poles.
+    Same filter, same arithmetic, different order of summation — which is why
+    the tolerance is a quantisation count rather than zero.
+    """
+    reference_path = tmp_path / "reference.wav"
+    reference_layered.render(str(reference_path), beat, seconds, base=ORIGIN_HZ)
+
+    preset = load_library()["layered"].with_overrides(
+        minutes=seconds / 60.0, beat=beat, base_hz=ORIGIN_HZ
+    )
+    ours_path = tmp_path / "violet.wav"
+    render_to_file(
+        preset.build_layers(), preset.render_config(), ours_path, subtype="PCM_16"
+    )
+
+    theirs = read_int16(reference_path)
+    ours = read_int16(ours_path)
+    assert ours.shape == theirs.shape
+    assert np.max(np.abs(ours - theirs)) <= TOLERANCE_COUNTS
+
+
+def test_prototype_two_parity_without_the_air_bed(
+    tmp_path: Path, reference_layered: ModuleType
+) -> None:
+    """And with the noise bed dropped, which is what --no-air did."""
+    beat, seconds = 4.0, 3.0
+    reference_path = tmp_path / "reference.wav"
+    reference_layered.render(
+        str(reference_path), beat, seconds, base=ORIGIN_HZ, air=False
+    )
+
+    preset = load_library()["layered"]
+    dry = replace(
+        preset,
+        minutes=seconds / 60.0,
+        beat=beat,
+        layers=tuple(spec for spec in preset.layers if spec.kind != "air"),
+    )
+    ours_path = tmp_path / "violet.wav"
+    render_to_file(dry.build_layers(), dry.render_config(), ours_path, subtype="PCM_16")
+
+    theirs = read_int16(reference_path)
+    ours = read_int16(ours_path)
+    assert np.max(np.abs(ours - theirs)) <= TOLERANCE_COUNTS
+
+
+def test_prototype_one_parity_through_the_preset(
+    tmp_path: Path, reference_binaural: ModuleType
+) -> None:
+    """The `tones` preset, not a hand-built stack, against prototype 1."""
+    beat, seconds = 4.0, 3.0
+    carrier = tuning.carrier_for(ORIGIN_HZ)
+
+    reference_path = tmp_path / "reference.wav"
+    reference_binaural.render(
+        str(reference_path),
+        carrier,
+        beat,
+        seconds,
+        0.09,
+        0.30,
+        False,  # noqa: FBT003 - the prototype's positional `loop` argument
+        base=ORIGIN_HZ,
+    )
+
+    preset = load_library()["tones"].with_overrides(minutes=seconds / 60.0, beat=beat)
+    ours_path = tmp_path / "violet.wav"
+    render_to_file(
+        preset.build_layers(), preset.render_config(), ours_path, subtype="PCM_16"
+    )
+
+    assert np.max(np.abs(read_int16(ours_path) - read_int16(reference_path))) <= (
+        TOLERANCE_COUNTS
+    )
 
 
 # ---------------------------------------------------------------------------
