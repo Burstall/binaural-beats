@@ -1,0 +1,29 @@
+# rendered audio — large, reproducible from seeds
+*.wav
+*.flac
+*.aiff
+out/
+renders/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.uv-cache/
+*.egg-info/
+dist/
+build/
+
+# uv.lock and .python-version are deliberately NOT ignored — a render is
+# only reproducible if the environment that produced it is.
+
+# tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# os
+.DS_Store

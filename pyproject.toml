@@ -1,0 +1,151 @@
+[project]
+name = "violet"
+version = "0.1.0"
+description = "Long-form binaural and ambient audio generation, streamed block by block."
+readme = "README.md"
+authors = [
+    { name = "Stowerling", email = "77861333+Burstall@users.noreply.github.com" }
+]
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+keywords = ["binaural", "audio", "dsp", "ambient", "generative"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
+]
+dependencies = [
+    "numpy>=2.5.2",
+    "scipy>=1.18.0",
+    "soundfile>=0.14.0",
+    "typer>=0.27.1",
+]
+
+[project.scripts]
+violet = "violet.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.11,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.3",
+]
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
+# `reference/` holds the frozen prototypes that this package is refactored
+# from. They are the specification, not source, and are deliberately left
+# unformatted and unlinted.
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["reference"]
+
+[tool.ruff.lint]
+select = [
+    "A",    # flake8-builtins
+    "ANN",  # flake8-annotations
+    "ARG",  # flake8-unused-arguments
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "C90",  # mccabe
+    "D",    # pydocstyle
+    "E",    # pycodestyle errors
+    "EM",   # flake8-errmsg
+    "F",    # pyflakes
+    "FBT",  # flake8-boolean-trap
+    "I",    # isort
+    "N",    # pep8-naming
+    "NPY",  # numpy-specific rules
+    "PERF", # perflint
+    "PIE",  # flake8-pie
+    "PL",   # pylint
+    "PT",   # flake8-pytest-style
+    "PTH",  # flake8-use-pathlib
+    "RET",  # flake8-return
+    "RUF",  # ruff-specific rules
+    "S",    # flake8-bandit
+    "SIM",  # flake8-simplify
+    "TC",   # flake8-type-checking
+    "TID",  # flake8-tidy-imports
+    "TRY",  # tryceratops
+    "UP",   # pyupgrade
+    "W",    # pycodestyle warnings
+]
+ignore = [
+    # pydocstyle, relaxed: docstrings are expected on public API, but the
+    # numpydoc section machinery and one-liner ceremony are not enforced.
+    "D107",   # missing docstring in __init__ (documented on the class)
+    "D203",   # 1 blank line before class docstring (conflicts with D211)
+    "D213",   # multi-line summary on second line (conflicts with D212)
+    "D401",   # imperative mood
+    "D406",   # section name should end with newline
+    "D407",   # missing dashed underline after section
+    "D413",   # missing blank line after last section
+    # Long messages passed to exceptions read better than opaque codes.
+    "TRY003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "D100",    # missing docstring in public module
+    "D103",    # missing docstring in public function
+    "PLR2004", # magic value in comparison — thresholds are the point of a test
+    "S101",    # assert — that is what tests are made of
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.pylint]
+# DSP signatures are legitimately wide (sr, block, level, beat, seed, ...).
+max-args = 8
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "soundfile.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+
+[tool.coverage.run]
+source = ["src/violet"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]
