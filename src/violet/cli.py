@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from violet import __version__, tuning
 from violet.dsp.curves import BeatCurve
+from violet.dsp.modulation import Modulation, tempo_locked
 from violet.engine import render_to_file
-from violet.layers import ChordBed, Ocean
+from violet.layers import ChordBed, Modulated, Ocean, Track
 from violet.presets import Preset, load_library, resolve_beat
 from violet.trial import ARMS, Trial
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+
+    from violet.layers import Layer
 
 app = typer.Typer(
     name="violet",
@@ -68,6 +75,66 @@ PresetsOption = Annotated[
         dir_okay=False,
     ),
 ]
+
+
+MusicOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--music",
+        help="An audio file to play under the preset (fills focus-music's slot).",
+        exists=True,
+        dir_okay=False,
+    ),
+]
+HzOption = Annotated[
+    str | None,
+    typer.Option("--hz", help="Modulation rate in Hz, or alpha/beta/..."),
+]
+BpmOption = Annotated[
+    float | None,
+    typer.Option("--bpm", help="Lock the modulation to this tempo."),
+]
+DepthOption = Annotated[
+    float | None,
+    typer.Option("--depth", help="Modulation depth, 0 (none) to 1 (full)."),
+]
+OffsetOption = Annotated[
+    float | None,
+    typer.Option("--offset", help="Seconds to the track's first beat."),
+]
+
+
+def _modulation(
+    current: Modulation | None,
+    hz: str | None,
+    bpm: float | None,
+    depth: float | None,
+    offset: float | None,
+) -> Modulation | None:
+    """
+    The preset's modulation with the command line's changes, or ``None``.
+
+    ``None`` means nothing was asked for and the preset stands as it is. Asking
+    for any of it on a preset without a modulation starts from 16 Hz at a
+    depth of 0.4, the focus-music defaults.
+    """
+    if hz is None and bpm is None and depth is None and offset is None:
+        return None
+    base = current or Modulation(rate=resolve_beat("beta"), depth=0.4)
+    rate: float | BeatCurve = base.rate
+    if hz is not None:
+        rate = resolve_beat(hz)
+    if bpm is not None:
+        if isinstance(rate, BeatCurve):
+            msg = "--bpm cannot lock a modulation rate that moves"
+            raise ValueError(msg)
+        rate = tempo_locked(rate, bpm)
+    return Modulation(
+        rate=rate,
+        depth=base.depth if depth is None else depth,
+        band=base.band,
+        offset=base.offset if offset is None else offset,
+    )
 
 
 def _library(paths: Path | None) -> object:
@@ -154,6 +221,11 @@ def render(  # noqa: PLR0913 - every one of these is a real knob
         str | None,
         typer.Option("--subtype", help="Sample format, e.g. PCM_16, PCM_24."),
     ] = None,
+    music: MusicOption = None,
+    hz: HzOption = None,
+    bpm: BpmOption = None,
+    depth: DepthOption = None,
+    offset: OffsetOption = None,
     presets: PresetsOption = None,
     quiet: Annotated[bool, typer.Option("--quiet", "-q")] = False,
 ) -> None:
@@ -171,18 +243,102 @@ def render(  # noqa: PLR0913 - every one of these is a real knob
             seed=seed,
             loop=loop,
             block_seconds=block,
+            modulation=_modulation(preset.modulation, hz, bpm, depth, offset),
+            music=music,
         )
         layers = preset.build_layers()
-        config = preset.render_config()
-    except ValueError as error:
+    except (ValueError, FileNotFoundError) as error:
         raise _fail(str(error)) from None
 
     destination = out or Path(f"{preset.name}.flac")
+    _render_and_report(preset, layers, destination, subtype=subtype, quiet=quiet)
+
+
+@app.command()
+def modulate(  # noqa: PLR0913 - every one of these is a real knob
+    music: Annotated[
+        Path,
+        typer.Argument(help="Audio file to modulate.", exists=True, dir_okay=False),
+    ],
+    *,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Output file; .wav or .flac."),
+    ] = None,
+    hz: HzOption = None,
+    bpm: BpmOption = None,
+    depth: DepthOption = None,
+    offset: OffsetOption = None,
+    subtype: Annotated[
+        str | None,
+        typer.Option("--subtype", help="Sample format, e.g. PCM_16, PCM_24."),
+    ] = None,
+    presets: PresetsOption = None,
+    quiet: Annotated[bool, typer.Option("--quiet", "-q")] = False,
+) -> None:
+    """
+    Modulate one music file, start to finish, into another.
+
+    The focus-music preset run over exactly the length of the file, with no
+    fade of its own: the music already starts and ends the way it does.
+    """
+    try:
+        preset: Preset = _library(presets)["focus-music"]  # type: ignore[index]
+    except KeyError as error:
+        raise _fail(str(error).strip("\"'")) from None
+
+    try:
+        preset = preset.with_overrides(
+            music=music,
+            modulation=_modulation(preset.modulation, hz, bpm, depth, offset),
+        )
+        track = next(_tracks(preset.build_layers()))
+        preset = replace(
+            preset.with_overrides(minutes=track.seconds / 60.0), fade_seconds=0.0
+        )
+        layers = preset.build_layers()
+    except (StopIteration, ValueError, FileNotFoundError) as error:
+        message = str(error) or "the focus-music preset has no track layer"
+        raise _fail(message) from None
+
+    destination = out or music.with_name(f"{music.stem}.focus.flac")
+    if destination.resolve() == music.resolve():
+        message = "refusing to write over the input; give a different --out"
+        raise _fail(message)
+    _render_and_report(preset, layers, destination, subtype=subtype, quiet=quiet)
+
+
+def _tracks(layers: Iterable[Layer]) -> Iterator[Track]:
+    """Every track in a mix, including inside a modulated group."""
+    for layer in layers:
+        if isinstance(layer, Track):
+            yield layer
+        elif isinstance(layer, Modulated):
+            yield from _tracks(layer.layers)
+
+
+def _render_and_report(
+    preset: Preset,
+    layers: list[Layer],
+    destination: Path,
+    *,
+    subtype: str | None,
+    quiet: bool,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     if not quiet:
-        _describe(preset)
-        echo(f"\nrendering to {destination} ...")
+        _describe(preset, layers)
+        if preset.modulation is not None and preset.gain is None:
+            echo("\nmeasuring the modulated mix's peak ...")
+
+    try:
+        config = preset.settled_config(layers)
+    except ValueError as error:
+        raise _fail(str(error)) from None
+
+    if not quiet:
+        echo(f"rendering to {destination} ...")
 
     started = time.perf_counter()
     try:
@@ -213,7 +369,7 @@ def render(  # noqa: PLR0913 - every one of these is a real knob
 # ---------------------------------------------------------------------------
 
 
-def _describe(preset: Preset) -> None:
+def _describe(preset: Preset, layers: list[Layer] | None = None) -> None:
     echo(f"{preset.name} — {preset.description}\n")
     echo(tuning.describe(preset.base_hz))
 
@@ -239,14 +395,33 @@ def _describe(preset: Preset) -> None:
     echo(f"seed                {preset.seed}")
     if preset.loop:
         echo(f"loop                yes, {preset.loop_crossfade:g} s fold if needed")
+    if preset.modulation is not None:
+        echo(f"modulation          {preset.modulation.describe()}")
 
     echo("\nlayers")
-    for layer in preset.build_layers():
+    try:
+        built = preset.build_layers() if layers is None else layers
+    except (ValueError, FileNotFoundError) as error:
+        echo(f"  ({error})")
+        return
+    for layer in built:
         echo(f"  {_layer_line(layer, preset)}")
 
 
 def _layer_line(layer: object, preset: Preset) -> str:
     match layer:
+        case Modulated():
+            inner = "\n".join(
+                "    " + _layer_line(one, preset).replace("\n", "\n  ")
+                for one in layer.layers
+            )
+            return f"modulated {layer.modulation.describe()}\n{inner}"
+        case Track():
+            again = ", repeating" if layer.repeat else ""
+            return (
+                f"track     level {layer.level:.3f}, {layer.path.name} "
+                f"({layer.seconds / 60.0:.2f} min at {layer.sample_rate} Hz{again})"
+            )
         case ChordBed():
             numerals = " ".join(
                 event.chord.numeral
@@ -302,6 +477,11 @@ def trial_start(  # noqa: PLR0913 - the render knobs, same as `render`
     scale: Annotated[
         str, typer.Option("--scale", help="Rating scale, as low-high.")
     ] = "1-5",
+    music: MusicOption = None,
+    hz: HzOption = None,
+    bpm: BpmOption = None,
+    depth: DepthOption = None,
+    offset: OffsetOption = None,
     presets: PresetsOption = None,
     directory: TrialsDir = Path("trials"),
 ) -> None:
@@ -323,18 +503,21 @@ def trial_start(  # noqa: PLR0913 - the render knobs, same as `render`
             beat=None if beat is None else resolve_beat(beat),
             base_hz=base,
             seed=seed,
+            modulation=_modulation(preset.modulation, hz, bpm, depth, offset),
+            music=music,
         )
         echo(f"rendering two arms of {preset.minutes:g} min each. This takes a while.")
         trial = Trial.create(preset, directory / name, name, scale=(low, high))
-    except ValueError as error:
+    except (ValueError, FileNotFoundError) as error:
         raise _fail(str(error)) from None
 
-    echo(f"\ntrial {trial.name} — {trial.preset}, {trial.beat:g} Hz against silence\n")
+    echo(f"\ntrial {trial.name} — {trial.preset}, {trial.treatment_label} vs none\n")
     for arm in ARMS:
         echo(f"  {trial.arm_path(arm)}")
     echo(
-        f"\nOne of those has the beat and the other does not. They are otherwise\n"
-        f"the same render: same seed, same chords, same waves, same noise.\n"
+        f"\nOne of those has {trial.treatment_noun} and the other does not. They "
+        f"are\notherwise the same render: same seed, same chords, same waves, same\n"
+        f"noise, same music.\n"
         f"\nUncompressed on purpose — FLAC would give the answer away by file size.\n"
         f"\nRun `violet trial next {trial.name}` to be told which to play. Rate each\n"
         f"session {trial.scale[0]} to {trial.scale[1]} with `violet trial log`.\n"
@@ -386,7 +569,7 @@ def trial_status(
     """Show progress without giving anything away."""
     trial = _open_trial(directory, name)
     counts = trial.counts()
-    echo(f"trial {trial.name} — {trial.preset}, {trial.beat_label} against silence")
+    echo(f"trial {trial.name} — {trial.preset}, {trial.treatment_label} vs none")
     echo(f"  created   {trial.created}")
     echo("  sessions  " + ", ".join(f"{a} {counts[a]}" for a in ARMS))
     echo(f"  revealed  {trial.revealed_at or 'no'}")
@@ -423,7 +606,8 @@ def trial_reveal(
         raise _fail(str(error)) from None
 
     echo(f"trial {trial.name} — unblinded\n")
-    echo(f"  {result.beat_arm} carried the beat ({trial.beat_label})")
+    echo(f"  {result.beat_arm} carried {trial.treatment_noun}")
+    echo(f"    ({trial.treatment_label})")
     echo(f"  {result.null_arm} had none\n")
     echo(
         f"  with beat     n={result.n_beat}  mean {result.mean_beat:.2f}  "
@@ -464,7 +648,7 @@ def trial_list(*, directory: TrialsDir = Path("trials")) -> None:
         counts = trial.counts()
         state = "revealed" if trial.revealed else "blind"
         echo(
-            f"  {trial.name:<16} {trial.preset:<12} {trial.beat_label:<24} "
+            f"  {trial.name:<16} {trial.preset:<12} {trial.treatment_label:<24} "
             + ", ".join(f"{a} {counts[a]}" for a in ARMS)
             + f"  [{state}]"
         )

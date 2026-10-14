@@ -9,6 +9,13 @@ else about the two files is identical — the ocean beds are bit-identical, and
 there is a test that says so. That is as close to a placebo as audio gets, and
 it costs nothing to make.
 
+Amplitude modulation gets the same treatment. Its null is a depth of zero, at
+which the modulated mix *is* the unmodulated one, sample for sample — so a
+modulated preset, including one built over a music track, is tested against
+the identical music with the pulse switched off. Both arms are rendered at the
+same master gain, decided from the treated arm, so loudness cannot tell them
+apart either.
+
 What this module is for is the bookkeeping that makes the blind hold: assigning
 the arms in a way you cannot derive, keeping the mapping out of sight, telling
 you which one to play so your own mood does not choose for you, and being
@@ -200,6 +207,10 @@ class Trial:
     created: str = ""
     revealed_at: str | None = None
 
+    #: The modulation under test, described, or ``None`` for a beat trial.
+    #: Trials made before modulation existed have none, and load as such.
+    modulation: str | None = None
+
     # -- paths --------------------------------------------------------------
 
     @property
@@ -233,6 +244,29 @@ class Trial:
             return self.beat.describe()
         return f"{self.beat:g} Hz"
 
+    @property
+    def treatment_noun(self) -> str:
+        """What the treated arm has, as a noun: the beat, the modulation, both."""
+        fastest = self.beat.span[1] if isinstance(self.beat, BeatCurve) else self.beat
+        nouns = [
+            noun
+            for noun, present in (
+                ("the beat", fastest > 0.0),
+                ("the modulation", self.modulation is not None),
+            )
+            if present
+        ]
+        return " and ".join(nouns)
+
+    @property
+    def treatment_label(self) -> str:
+        """Everything the treated arm has and the other does not."""
+        fastest = self.beat.span[1] if isinstance(self.beat, BeatCurve) else self.beat
+        parts = [f"beat {self.beat_label}"] if fastest > 0.0 else []
+        if self.modulation is not None:
+            parts.append(f"modulation {self.modulation}")
+        return " + ".join(parts)
+
     # -- creation and loading ----------------------------------------------
 
     @classmethod
@@ -246,18 +280,16 @@ class Trial:
         """
         Render both arms and seal the mapping.
 
-        The beat goes to one arm and zero to the other, chosen by
-        :mod:`secrets` so that nothing in the visible state implies which. The
-        renders are otherwise the same configuration and the same seed, so the
-        progression, the wave events and the noise are identical between them.
+        The preset goes to one arm and its :meth:`~violet.presets.Preset.placebo`
+        to the other, chosen by :mod:`secrets` so that nothing in the visible
+        state implies which. The renders are otherwise the same configuration
+        and the same seed, so the progression, the wave events, the noise and
+        any music are identical between them, and so is the master gain.
         """
-        fastest = (
-            preset.beat.span[1] if isinstance(preset.beat, BeatCurve) else preset.beat
-        )
-        if fastest <= 0.0:
+        if not preset.tests_something:
             msg = (
-                f"a trial needs a preset with a beat to test; {preset.name!r} "
-                f"never rises above 0 Hz, which is already the null condition"
+                f"a trial needs a preset with a beat or a modulation to test; "
+                f"{preset.name!r} has neither, which is already the null condition"
             )
             raise ValueError(msg)
         if directory.exists() and any(directory.iterdir()):
@@ -280,17 +312,28 @@ class Trial:
             sample_rate=preset.sample_rate,
             scale=scale,
             created=_now(),
+            modulation=(
+                preset.modulation.describe()
+                if preset.modulation is not None and preset.modulation.active
+                else None
+            ),
         )
+
+        # One gain for both arms, from the treated one. For a beat trial this is
+        # what each arm would have derived anyway; for a modulated one the
+        # placebo's peak is lower, and left to itself it would come out louder.
+        treated = preset.build_layers()
+        gain = preset.settled_config(treated).gain
 
         beat_arm = secrets.choice(ARMS)
         for arm in ARMS:
-            beat = preset.beat if arm == beat_arm else 0.0
-            arm_preset = preset.with_overrides(beat=beat)
+            arm_preset = preset if arm == beat_arm else preset.placebo()
+            layers = treated if arm == beat_arm else arm_preset.build_layers()
             # PCM_16 WAV: uncompressed, so both files are the same length and
             # the format cannot give the arm away. See the module docstring.
             render_to_file(
-                arm_preset.build_layers(),
-                arm_preset.render_config(),
+                layers,
+                replace(arm_preset.render_config(), gain=gain),
                 trial.arm_path(arm),
                 subtype="PCM_16",
             )
@@ -326,6 +369,7 @@ class Trial:
             "scale": list(self.scale),
             "created": self.created,
             "revealed_at": self.revealed_at,
+            "modulation": self.modulation,
         }
         self.state_path.write_text(
             json.dumps(fields, indent=2) + "\n", encoding="utf-8"

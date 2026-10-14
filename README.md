@@ -254,6 +254,11 @@ uv run violet show ocean
 | `sleep` | The ocean at a delta rate, longer, with the surf closer. |
 | `ocean-loop` | Five minutes of ocean that plays on repeat with no seam. |
 | `tones-loop` | Ten minutes of tones, mathematically seamless. |
+| `descent` | 45 minutes gliding from alpha through theta down to delta. |
+| `meditate` | 20 minutes from alpha to theta, over the ocean. |
+| `focus-music` | Your own music, modulated at 16 Hz. Needs `--music FILE`. |
+| `deep-focus` | Slow chords over a pedal, no beat, modulated at 16 Hz. |
+| `creativity` | The same bed, lighter: 10 Hz at a gentle depth. |
 
 The first three reproduce the three prototype scripts in `reference/`
 *sample for sample* — there are tests that render both and compare in int16
@@ -289,7 +294,7 @@ level = 0.5
 uv run violet render mine --presets mine.toml --out om.flac
 ```
 
-Layer kinds are `pair`, `pedal`, `chords`, `ocean` and `air`. Ratios are
+Layer kinds are `pair`, `pedal`, `chords`, `ocean`, `air` and `track`. Ratios are
 relative to the *carrier*, so a preset transposes correctly to any base; the
 pedal is the exception and sounds the base itself. Reusing a built-in name
 replaces it.
@@ -377,6 +382,120 @@ descent isn't the rate at the start, so however smooth the waveform is at the
 join, the pulse jumps. An honest "these two cannot coexist" beats a muddy
 compromise — a *flat* curve loops fine.
 
+## A pulse you can hear on a speaker
+
+Everything above puts its rate *between* the ears. Amplitude modulation puts it
+in the loudness instead: a band of the mix dips and recovers many times a
+second, the same in both ears. It needs no headphones, it survives lossy
+streaming, and it can be laid over any music at all — including music you
+already like.
+
+This is what Brain.fm sells, and they say outright that they do not use
+binaural beats. Their evidence is one paper: Woods et al. (2024),
+*Communications Biology* 7:1376. What it actually shows:
+
+- **Who:** two of the authors work for Brain.fm and hold equity; the company
+  made the music tested. Funded by an NSF small-business grant. No independent
+  replication found at the time of writing.
+- **What helped:** 16 Hz modulation, confined to roughly 200 Hz–1 kHz and
+  aligned to the music's beat, improved a sustained-attention task — mostly for
+  participants who rated themselves high on ADHD symptoms. The key interaction
+  came in at p = 0.048.
+- **What did not:** varying modulation *depth* had no significant effect at
+  all. The whole-brain fMRI group comparison was not significant. In the first
+  experiment the benefit depended on hearing the modulated track first.
+- **Caveats:** 21–48% of online participants were excluded, and the early
+  experiments' comparison tracks also differed in key and instrumentation.
+
+Promising for a subgroup, not settled for anyone. Which is exactly what the
+trial below is for.
+
+```sh
+uv run violet render focus-music --music track.flac --bpm 84 --minutes 50
+uv run violet modulate track.flac --bpm 84            # one file in, one out
+uv run violet render deep-focus --out work.flac         # no music needed
+uv run violet render ocean --depth 0.3 --hz beta        # modulate any preset
+```
+
+### How it is built
+
+`Modulated` is a layer that wraps other layers. To the engine it is one more
+layer; the engine did not change. It sums what it wraps, isolates the
+200 Hz–1 kHz band with a fourth-order Butterworth whose state is carried block
+to block like every other filter here, and subtracts a raised-cosine fraction
+of that band:
+
+    out = x - depth * m(t) * band(x)
+
+Two reasons for the band. Modulate the bass and a kick drum starts pumping;
+modulate the top and the hats flutter. Both sound like the music breaking rather
+than like texture. And it is what the study did.
+
+Two reasons for writing it as a subtraction rather than `rest + gain * band`:
+at `depth = 0` it subtracts exactly zero, so **the placebo is the original,
+sample for sample** — not a reconstruction of it, and there is a test that
+compares bytes. That is what makes a blinded trial of the modulation exact.
+
+The pulse is at full level on every cycle boundary. With `--bpm`, the rate is
+moved to the nearest duple or triple subdivision of the tempo — 16 Hz at 84 bpm
+becomes 16.8, twelve pulses to the beat — so the drum hits land at the top of a
+pulse and the dips fall between them. `--offset` moves the first pulse onto the
+track's first downbeat if it doesn't start on one. The rate can also move over
+a render, with the same closed-form phase integral the beat curves use.
+
+`Track` streams WAV, FLAC, MP3 or Ogg from disk, a block at a time. WAV, FLAC
+and MP3 seek to the exact sample, so the layer is stateless for them. Ogg
+Vorbis does not — libsndfile lands within a packet of the target, which an
+early version of this layer turned into samples up to 0.47 apart at different
+block sizes — so Ogg is read straight through and a jump is refused rather than
+misread. It renders at the file's own sample rate rather than resampling,
+repeats to fill a longer session, and measures its own peak instead of
+estimating one.
+
+### Headroom, measured
+
+The analytic bound for a modulated mix is pessimistic: a band-pass can ring past
+its input by up to its impulse response's L1 norm, about 1.76 here, and the bound
+has to assume that happens against the full signal at the bottom of a pulse. On
+a mastered track that would cost nearly 6 dB for nothing. So a modulated preset
+without an explicit gain is rendered once into nothing, its real peak measured,
+and attenuated only as far as that peak needs. Rendering is deterministic, so
+the second pass produces exactly the samples the first one measured. In a
+trial, the gain is decided once from the treated arm and used for both, so
+loudness cannot give the arm away.
+
+### What it won't do
+
+A modulated mix cannot be a seamless loop. The band filter's memory can't be
+made periodic by rounding a frequency, and crossfading the whole mix would
+comb-filter every tone in it. The presets refuse the combination and say why.
+
+The `creativity` preset's rate and depth are a guess. Nothing published says
+what suits creative work; it is a lighter touch than `deep-focus` because a
+heavier one is more intrusive, and the study's own 8 Hz condition did no better
+than no modulation. Trial it before believing it.
+
+### Music to put under it
+
+Use what you like listening to; that matters more than anything in this
+section. For files you can freely modify, the licences worth knowing (as of
+October 2026, so check before relying on them):
+
+- **CC0 / public domain lo-fi** — HoliznaCC0 on the Free Music Archive has
+  several hundred tracks. FMA mixes CC0 and BY with NC and ND licences, so
+  check each track. The site has no API and its terms forbid scraping.
+- **CC BY** — Kevin MacLeod (incompetech.com) explicitly allows modification;
+  attribution required. Calm and ambient rather than lo-fi.
+- **Internet Archive netlabels** — a searchable API with a licence field.
+  Filter out anything `nd`.
+- **Generate it** — ACE-Step 1.5 (MIT weights, outputs usable commercially,
+  runs in under 4 GB of VRAM) or Stable Audio 3 Small (community licence) make
+  multi-minute instrumentals locally.
+
+Avoid anything "no derivatives", and anything licensed only for YouTube or
+Twitch use — Chillhop's creator programme and StreamBeats both forbid
+modification.
+
 ## Finding out for yourself
 
 The null condition is one parameter set to zero. Two files from the same
@@ -437,7 +556,7 @@ gives the encoder more to spend bits on.
 ## Development
 
 ```sh
-uv run pytest                  # 484 tests, about a minute
+uv run pytest                  # 571 tests, about a minute and a half
 uv run pytest --cov            # 99% covered, with a 97% floor that CI enforces
 uv run ruff check .
 uv run ruff format --check .
@@ -459,11 +578,13 @@ violet/
   harmony.py    chords as ratio sets, weighted walk, equal-power crossfades
   dsp/
     curves.py   beat rates that move, and their phase integral in closed form
+    modulation.py  amplitude modulation: rate, depth, band, tempo locking
     osc.py      sine pairs
     noise.py    pink generators with persistent state
     filters.py  typed wrappers over scipy IIR, one state per channel
     env.py      fades, swells, slow LFOs
-  layers.py     the Layer protocol: BinauralPair, Pedal, ChordBed, Ocean, Air
+  layers.py     the Layer protocol: BinauralPair, Pedal, ChordBed, Ocean, Air,
+                Track, and Modulated, which wraps the others
   engine.py     block-streaming renderer, sinks, loop closing
   presets.py    frozen config, TOML loading
   trial.py      blinded trials: sealed assignment, logging, honest statistics
@@ -514,8 +635,10 @@ README and in `data/presets.toml` and nowhere in the Python.
 7. **The violet companion.** A generated page at the mapped colour, brightness
    driven by the same wave envelope. 406 nm is outside sRGB, so it will be an
    approximation, and that is worth saying on the page itself.
-8. **Isochronic and monaural modes.** Amplitude-gated single tones, which
-   survive speakers and lossy streaming where binaural beats do not.
+8. ~~**Isochronic and monaural modes.**~~ Superseded by amplitude
+   modulation — see [A pulse you can hear on a speaker](#a-pulse-you-can-hear-on-a-speaker).
+9. **A phone player.** The modulation is cheap enough to run live in Web Audio,
+   which would make one music file serve every rate and depth.
 
 ## Licence
 

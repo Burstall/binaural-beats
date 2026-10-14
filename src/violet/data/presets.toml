@@ -232,3 +232,150 @@ level = 0.080
 [[descent.layer]]
 kind = "ocean"
 level = 0.45
+
+# ---------------------------------------------------------------------------
+# Amplitude modulation
+#
+# Everything above puts its rate *between* the ears, as a binaural beat. These
+# put it in the loudness instead: a band of the mix, 200 Hz to 1 kHz, dips and
+# recovers many times a second, the same in both ears. It works on speakers.
+# This is the technique behind Brain.fm and the one its published study tested
+# (Woods et al. 2024, Communications Biology 7:1376). The README says what that
+# study found and what it did not; in short, a small benefit on a vigilance
+# task, mostly in listeners who rated themselves high on attention
+# difficulties, from a team that included the company's own staff.
+#
+# Run any of these as a trial (`violet trial start`) and the other arm is the
+# identical mix with the modulation depth at zero, which is the unmodulated mix
+# sample for sample.
+#
+# beat = 0.0 throughout: one pulse per mix, and a binaural beat at one rate
+# under a modulation at another would be two.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# focus-music — a slot for your own music, modulated at 16 Hz
+#
+# The rate the study found helped, and the band it modulated. Give a file:
+#
+#   violet render focus-music --music track.flac --bpm 84 --minutes 50
+#
+# --bpm locks the pulse to the track's tempo: at 84 bpm, 16 Hz becomes 16.8,
+# twelve pulses to the beat, so the drum hits land at full level and the dips
+# fall between them. The track repeats to fill the length, and the render runs
+# at the track's own sample rate.
+#
+# The ceiling is higher than the generative presets' because this is mastered
+# music, already loud on purpose: the gain is measured, and a track that peaks
+# at full scale loses half a decibel rather than a whole one.
+# ---------------------------------------------------------------------------
+[focus-music]
+description = "Your own music, modulated at 16 Hz. Needs --music FILE."
+base_hz = 83.949
+beat = 0.0
+minutes = 50.0
+fade_seconds = 6.0
+ceiling = 0.94
+modulation = { hz = "beta", depth = 0.4, band_hz = [200.0, 1000.0] }
+
+[[focus-music.layer]]
+kind = "track"
+level = 1.0
+repeat = true
+
+# ---------------------------------------------------------------------------
+# deep-focus — the generative bed, no beat, modulated at 16 Hz
+#
+# The ocean's chords and pedal without the ocean, over the quiet air floor.
+# Modulating pure sines is harsher than modulating music — there is nothing in
+# a sine to hide the flutter in — so the depth is lower than focus-music's.
+# ---------------------------------------------------------------------------
+[deep-focus]
+description = "Slow chords over a pedal, no beat, modulated at 16 Hz."
+base_hz = 83.949
+beat = 0.0
+sample_rate = 32000
+minutes = 50.0
+seed = 5
+gain = 1.5
+fade_seconds = 20.0
+fade_denominator = 5
+modulation = { hz = "beta", depth = 0.3 }
+
+[[deep-focus.layer]]
+kind = "chords"
+level = 0.070
+
+[[deep-focus.layer]]
+kind = "pedal"
+level = 0.080
+
+[[deep-focus.layer]]
+kind = "air"
+level = 0.03
+
+# ---------------------------------------------------------------------------
+# creativity — the same bed, lighter and slower
+#
+# Brain.fm offers a gentler setting for open-ended work. Nothing published
+# says which rate or depth suits creative work, if any does; this is a
+# lighter touch at an alpha-band 10 Hz because heavier modulation is more
+# intrusive, and that is the whole of the reasoning. The study's own 8 Hz
+# condition did no better than its unmodulated control. Trial it before
+# believing it.
+# ---------------------------------------------------------------------------
+[creativity]
+description = "The focus bed, lighter: 10 Hz at a gentle depth."
+base_hz = 83.949
+beat = 0.0
+sample_rate = 32000
+minutes = 50.0
+seed = 9
+gain = 2.2
+fade_seconds = 20.0
+fade_denominator = 5
+modulation = { hz = "alpha", depth = 0.2 }
+
+[[creativity.layer]]
+kind = "chords"
+level = 0.070
+min_seconds = 30.0
+max_seconds = 50.0
+
+[[creativity.layer]]
+kind = "pedal"
+level = 0.070
+
+[[creativity.layer]]
+kind = "ocean"
+level = 0.25
+
+# ---------------------------------------------------------------------------
+# meditate — twenty minutes from alpha to theta, by the ocean
+#
+# No modulation: a pulse in the loudness is the opposite of what sitting still
+# wants. A short version of the descent instead, settling at theta rather than
+# going on down to sleep.
+# ---------------------------------------------------------------------------
+[meditate]
+description = "20 minutes gliding from alpha to theta, over the ocean."
+base_hz = 83.949
+sample_rate = 32000
+minutes = 20.0
+seed = 21
+gain = 1.25
+fade_seconds = 20.0
+fade_denominator = 5
+beat = { shape = "exponential", at_minutes = [0, 4, 12, 20], hz = [10, 10, 5, 5] }
+
+[[meditate.layer]]
+kind = "chords"
+level = 0.070
+
+[[meditate.layer]]
+kind = "pedal"
+level = 0.080
+
+[[meditate.layer]]
+kind = "ocean"
+level = 0.40

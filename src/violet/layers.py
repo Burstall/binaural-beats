@@ -9,6 +9,8 @@ produce, it is told *which* samples to produce. There is no way to write
 until it has already been given the indices those samples belong to.
 
 Adding a sound source means writing one class. The engine never changes.
+That holds for processing too: :class:`Modulated` takes other layers and hands
+back their sum with a pulse applied, and to the engine it is one more layer.
 
 State
 -----
@@ -29,17 +31,22 @@ from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
+import soundfile as sf
 
 from violet.dsp.curves import BeatCurve
 from violet.dsp.env import Breathing, Lfo, Swell, swell_envelope
 from violet.dsp.filters import FilterDesign
+from violet.dsp.modulation import band_gain_bound
 from violet.dsp.noise import KelletPink, OnePole, PinkNoise, spawn_seeds
 from violet.dsp.osc import sine, sine_pair, swept_pair
 from violet.harmony import crossfade_gain, tiles_loop
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from violet._types import FloatArray, IntArray, Stereo
     from violet.dsp.filters import FilterStream
+    from violet.dsp.modulation import Modulation
     from violet.harmony import ChordEvent
 
 __all__ = [
@@ -48,10 +55,12 @@ __all__ = [
     "ChordBed",
     "Layer",
     "LoopableLayer",
+    "Modulated",
     "Ocean",
     "Pedal",
     "Span",
     "StatefulLayer",
+    "Track",
     "snap_frequency",
 ]
 
@@ -503,8 +512,14 @@ class Air:
     cutoff_hz: float = 141.7974
     seed: int = 7
 
-    #: Measured bound at ``level = 1``, the same way the ocean's is.
-    peak_estimate: float = 0.35
+    #: Measured bound at ``level = 1``, the same way the ocean's is: five-minute
+    #: renders across seven seeds and three sample rates peak between 8.9 and
+    #: 11.2, and this leaves half again on top. Large, because Kellet's slowest
+    #: pole has a DC gain of about 42 and the low-pass keeps all of it — this
+    #: bed is nearly all rumble. It once said 0.35, which no render ever
+    #: respected; nothing noticed because the one preset using it set its gain
+    #: by hand. There is now a test.
+    peak_estimate: float = 17.0
 
     stateful: ClassVar[bool] = True
 
@@ -675,3 +690,282 @@ class Ocean:
 
         self._next_index = span.stop
         return channels[0], channels[1]
+
+
+#: Frames read per chunk when measuring a track's peak. A few seconds at a
+#: time keeps memory flat however long the file is.
+_MEASURE_FRAMES = 1 << 18
+
+#: Containers libsndfile cannot seek to the exact sample. Measured, not
+#: assumed: seeking an Ogg Vorbis file lands within a packet of the target, so
+#: reading it in 0.37 s blocks and in 10 s blocks gave samples up to 0.47
+#: apart. WAV, FLAC and MP3 seek exactly and read back identically either way.
+_SEQUENTIAL_FORMATS = frozenset({"OGG"})
+
+
+class _Reader:
+    """
+    An open audio file and how far into it the last read went.
+
+    Reading straight on from where the previous block stopped needs no seek
+    at all, and a render always asks for its blocks in order — so in practice
+    the only seek a render makes is back to the start when a track repeats.
+    For a container that cannot seek exactly, that one is done by reopening
+    the file, which is exact by definition, and any other jump is refused
+    rather than quietly misread.
+    """
+
+    __slots__ = ("_handle", "path", "position", "sequential")
+
+    def __init__(self, path: Path, *, sequential: bool) -> None:
+        self.path = path
+        self.sequential = sequential
+        self.position = 0
+        self._handle: sf.SoundFile | None = None
+
+    def read(self, start: int, count: int) -> FloatArray:
+        """``count`` frames from frame ``start``, as ``(count, channels)``."""
+        if self._handle is None or start != self.position:
+            if self._handle is not None and start == 0 and self.sequential:
+                self.close()
+            if self._handle is None:
+                self._handle = sf.SoundFile(str(self.path))
+                self.position = 0
+            if start != self.position:
+                if self.sequential:
+                    msg = (
+                        f"{self.path.name} cannot be seeked to the sample, so it "
+                        f"has to be read in order: asked for frame {start} with "
+                        f"the file at {self.position}. Convert it to FLAC to "
+                        f"read it in any order."
+                    )
+                    raise ValueError(msg)
+                self._handle.seek(start)
+        out: FloatArray = self._handle.read(count, dtype="float64", always_2d=True)
+        self.position = start + count
+        return out
+
+    def close(self) -> None:
+        """Let go of the file. The next read opens it again."""
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+        self.position = 0
+
+
+@dataclass(frozen=True, slots=True)
+class Track:
+    """
+    A piece of recorded music, streamed from a file.
+
+    Stateless for WAV, FLAC and MP3, because those can be seeked to the
+    sample: the layer is handed a span of absolute indices and reads exactly
+    those frames, so it renders at any block size and in any order and gives
+    the same samples. Only the file handle is kept between blocks, and only so
+    that reading straight on needs no seek. Ogg files cannot be seeked
+    exactly and must be read in order — which is how the engine reads them
+    anyway — and the layer refuses a jump rather than misreading one.
+
+    Mono files go to both ears. Anything over two channels is refused rather
+    than guessed at.
+
+    The file has to be at the render's sample rate. Resampling block by block
+    without seams is a project of its own, and a render at the track's own rate
+    loses nothing, so the layer says so and leaves the rate to whoever builds
+    the render.
+
+    ``repeat`` plays the file again from the top when it runs out, for
+    sessions longer than the track. The join is whatever the file's own end and
+    start make it — a track that fades out and in again is heard doing so.
+    Without ``repeat`` the layer is silent past the end of the file.
+    """
+
+    path: Path
+    level: float = 1.0
+    repeat: bool = False
+
+    stateful: ClassVar[bool] = False
+
+    frames: int = field(init=False, default=0)
+    sample_rate: int = field(init=False, default=0)
+    channels: int = field(init=False, default=0)
+
+    #: The file's own peak, measured once when the layer is built. Exact rather
+    #: than estimated: this is recorded audio, and it can simply be read.
+    file_peak: float = field(init=False, default=0.0)
+
+    _reader: _Reader = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self.level < 0.0:
+            msg = f"level must not be negative, got {self.level!r}"
+            raise ValueError(msg)
+        if not self.path.is_file():
+            msg = f"no audio file at {self.path}"
+            raise FileNotFoundError(msg)
+        info = sf.info(str(self.path))
+        if info.channels not in {1, 2}:
+            msg = (
+                f"{self.path.name} has {info.channels} channels; a track must be "
+                f"mono or stereo"
+            )
+            raise ValueError(msg)
+        if info.frames <= 0:
+            msg = f"{self.path.name} has no audio in it"
+            raise ValueError(msg)
+        object.__setattr__(self, "frames", int(info.frames))
+        object.__setattr__(self, "sample_rate", int(info.samplerate))
+        object.__setattr__(self, "channels", int(info.channels))
+        object.__setattr__(self, "file_peak", self._measure_peak())
+        sequential = info.format in _SEQUENTIAL_FORMATS
+        object.__setattr__(self, "_reader", _Reader(self.path, sequential=sequential))
+
+    @property
+    def seconds(self) -> float:
+        """Length of the file."""
+        return self.frames / self.sample_rate
+
+    @property
+    def peak(self) -> float:
+        """The file's measured peak, at this layer's level."""
+        return self.level * self.file_peak
+
+    def _measure_peak(self) -> float:
+        peak = 0.0
+        with sf.SoundFile(str(self.path)) as handle:
+            for chunk in handle.blocks(blocksize=_MEASURE_FRAMES, dtype="float64"):
+                peak = max(peak, float(np.abs(chunk).max()))
+        return peak
+
+    def render(self, span: Span) -> Stereo:
+        """Read the frames ``span`` names, wrapping if the track repeats."""
+        if span.sample_rate != self.sample_rate:
+            msg = (
+                f"{self.path.name} is at {self.sample_rate} Hz but the render is "
+                f"at {span.sample_rate} Hz; render at the track's own rate"
+            )
+            raise ValueError(msg)
+
+        block = np.zeros((span.n, self.channels), dtype=np.float64)
+        if self.repeat:
+            filled = 0
+            position = span.start % self.frames
+            while filled < span.n:
+                count = min(span.n - filled, self.frames - position)
+                block[filled : filled + count] = self._reader.read(position, count)
+                filled += count
+                position = 0
+        elif span.start < self.frames:
+            count = min(span.stop, self.frames) - span.start
+            block[:count] = self._reader.read(span.start, count)
+
+        if self._reader.position >= self.frames:
+            self._reader.close()
+
+        block *= self.level
+        if self.channels == 1:
+            return block[:, 0], block[:, 0]
+        return block[:, 0], block[:, 1]
+
+
+@dataclass(slots=True)
+class Modulated:
+    """
+    Other layers, summed, with an amplitude modulation applied to the result.
+
+    The one layer that processes rather than generates. It renders what it
+    wraps over the span it is given, adds them up, and dips a band of the sum
+    by :meth:`~violet.dsp.modulation.Modulation.dip` — the same in both ears,
+    so the pulse is in the loudness and not in the interaural phase. See
+    :mod:`violet.dsp.modulation` for what that is and what is known about it.
+
+    Stateful, because the band-pass that isolates the modulated band carries
+    its history from block to block: one filter per ear, never shared. That
+    makes it the same kind of layer as the ocean — rendered in order, reset
+    before every render — whatever it wraps.
+
+    At a depth of zero the output is the sum of the wrapped layers, exactly.
+    No filter runs and nothing is subtracted, which is what lets a render
+    without modulation serve as the placebo for one with it.
+
+    Not loopable: a filter's memory cannot be made periodic by rounding a
+    frequency. The presets refuse a modulated loop rather than let the engine
+    crossfade the whole mix, which would comb-filter every tone in it.
+    """
+
+    layers: tuple[Layer, ...]
+    modulation: Modulation
+    sample_rate: int
+
+    stateful: ClassVar[bool] = True
+
+    _streams: list[FilterStream] = field(init=False, repr=False)
+    _band_bound: float = field(init=False, repr=False)
+    _next_index: int = field(init=False, default=0, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.layers:
+            msg = "a modulated group needs at least one layer to modulate"
+            raise ValueError(msg)
+        design = self.modulation.design(self.sample_rate)
+        self._streams = [design.stream(), design.stream()]
+        self._band_bound = band_gain_bound(design, self.sample_rate)
+        self._next_index = 0
+
+    @property
+    def peak(self) -> float:
+        """
+        What the wrapped layers can reach, plus what the dip can add.
+
+        ``x - d*m*band`` is at most ``|x| + d*|band|``, and the band can reach
+        the filter's L1 gain times the input. Pessimistic, because it assumes
+        the band peaks against the full signal at the bottom of a pulse, but it
+        is a bound and not a guess. At depth zero it is the wrapped layers' own
+        peak, as it should be.
+        """
+        inner = sum(layer.peak for layer in self.layers)
+        return inner * (1.0 + self.modulation.depth * self._band_bound)
+
+    def reset(self) -> None:
+        """Reset everything wrapped, and both band filters."""
+        for layer in self.layers:
+            if isinstance(layer, StatefulLayer):
+                layer.reset()
+        for stream in self._streams:
+            stream.reset()
+        self._next_index = 0
+
+    def render(self, span: Span) -> Stereo:
+        """Render the wrapped layers over ``span`` and modulate their sum."""
+        if span.sample_rate != self.sample_rate:
+            msg = (
+                f"Modulated was built for {self.sample_rate} Hz but asked to "
+                f"render at {span.sample_rate} Hz; its filters are designed for "
+                f"one rate"
+            )
+            raise ValueError(msg)
+        if span.start != self._next_index:
+            msg = (
+                f"Modulated must be rendered in order: expected the block "
+                f"starting at sample {self._next_index}, got {span.start}. Its "
+                f"band filters cannot be seeked; call reset() to start again."
+            )
+            raise ValueError(msg)
+
+        # Fresh arrays: what a layer returns belongs to it, and a mono layer
+        # hands back the same array for both ears.
+        left = np.zeros(span.n, dtype=np.float64)
+        right = np.zeros(span.n, dtype=np.float64)
+        for layer in self.layers:
+            layer_left, layer_right = layer.render(span)
+            left += layer_left
+            right += layer_right
+        self._next_index = span.stop
+
+        if not self.modulation.active:
+            return left, right
+
+        dip = self.modulation.dip(span.t)
+        left -= dip * self._streams[0].process(left)
+        right -= dip * self._streams[1].process(right)
+        return left, right

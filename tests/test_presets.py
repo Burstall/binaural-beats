@@ -17,13 +17,16 @@ import pytest
 import soundfile as sf
 from typer.testing import CliRunner
 
+import music
 from violet.cli import app
 from violet.engine import ArraySink, render
-from violet.layers import Air, BinauralPair, ChordBed, Layer, Ocean, Pedal
+from violet.layers import Air, BinauralPair, ChordBed, Layer, Modulated, Ocean, Pedal
 from violet.presets import (
     BANDS,
     BUILTIN_PRESETS,
     Preset,
+    PresetLibrary,
+    TrackSpec,
     load_library,
     resolve_beat,
 )
@@ -31,8 +34,34 @@ from violet.presets import (
 GOLDEN = Path(__file__).parent / "golden" / "presets.json"
 GOLDEN_SECONDS = 5.0
 
-LIBRARY = load_library()
+
+def playable(preset: Preset) -> Preset:
+    """
+    The preset, with any empty music slot filled by the synthetic test track.
+
+    ``focus-music`` ships with a slot rather than a file, so on its own it
+    cannot render. Every test that walks the built-ins walks this instead.
+    """
+    empty = any(
+        isinstance(spec, TrackSpec) and spec.path is None for spec in preset.layers
+    )
+    return preset.with_overrides(music=music.track_path()) if empty else preset
+
+
+LIBRARY = PresetLibrary(
+    {name: playable(preset) for name, preset in load_library().presets.items()}
+)
 NAMES = LIBRARY.names
+
+
+def leaves(layers: list[Layer]) -> list[Layer]:
+    """The layers that make sound, looking inside a modulated group."""
+    out: list[Layer] = []
+    for layer in layers:
+        out.extend(
+            leaves(list(layer.layers)) if isinstance(layer, Modulated) else [layer]
+        )
+    return out
 
 
 def render_seconds(preset: Preset, seconds: float = GOLDEN_SECONDS) -> np.ndarray:
@@ -73,7 +102,8 @@ def test_every_preset_describes_a_renderable_piece(name: str) -> None:
     assert preset.layers
     assert 250.0 <= preset.carrier_hz <= 520.0
     layers = preset.build_layers()
-    assert len(layers) == len(preset.layers)
+    assert len(leaves(layers)) == len(preset.layers)
+    assert isinstance(layers[0], Modulated) == (preset.modulation is not None)
 
 
 @pytest.mark.parametrize("name", NAMES)

@@ -53,7 +53,7 @@ or FLAC. Nothing is buffered in memory and nothing is shelled out to.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -72,12 +72,14 @@ if TYPE_CHECKING:
 __all__ = [
     "ArraySink",
     "LoopConfig",
+    "NullSink",
     "RenderConfig",
     "RenderResult",
     "Sink",
     "SoundFileSink",
     "headroom_gain",
     "loop_length",
+    "measured_gain",
     "render",
     "render_to_file",
 ]
@@ -225,6 +227,14 @@ class ArraySink:
             return np.zeros((0, 2), dtype=np.float64)
         out: FloatArray = np.concatenate(self._blocks, axis=0)
         return out
+
+
+class NullSink:
+    """Discards every block. For a pass that only wants the result's numbers."""
+
+    def write(self, block: FloatArray) -> None:
+        """Do nothing with the block."""
+        del block
 
 
 class SoundFileSink:
@@ -504,6 +514,25 @@ def render(
         loop_crossfade_frames=overhang,
         notes=notes,
     )
+
+
+def measured_gain(layers: Sequence[Layer], config: RenderConfig) -> float:
+    """
+    Master gain from the peak a render actually reaches, not from a bound.
+
+    Renders once at unity gain into nothing, then attenuates only as far as
+    that peak needs to land on ``config.ceiling``. Never boosts, the same as
+    :func:`headroom_gain`. Exact, because rendering is deterministic: the
+    second pass produces the same samples the first one measured.
+
+    It costs a whole extra render. Worth it where the analytic bound is far
+    from the truth, which is what a band filter inside a modulation does to
+    it, and nowhere else.
+    """
+    result = render(layers, replace(config, gain=1.0), NullSink())
+    if result.peak <= 0.0:
+        return 1.0
+    return min(1.0, config.ceiling / result.peak)
 
 
 def render_to_file(
