@@ -14,6 +14,7 @@ from violet.dsp.curves import BeatCurve
 from violet.dsp.modulation import Modulation, tempo_locked
 from violet.engine import render_to_file
 from violet.layers import ChordBed, Modulated, Ocean, Track
+from violet.library_cli import library_app
 from violet.presets import Preset, load_library, resolve_beat
 from violet.trial import ARMS, Trial
 
@@ -35,6 +36,7 @@ trial_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(trial_app)
+app.add_typer(library_app)
 
 echo = typer.echo
 

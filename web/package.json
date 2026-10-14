@@ -1,0 +1,18 @@
+{
+  "name": "violet-web",
+  "private": true,
+  "type": "module",
+  "description": "violet on a phone: the app, its worker, and their tests.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply violet --remote"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.0"
+  }
+}

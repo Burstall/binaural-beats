@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>violet</title>
+<meta name="description" content="Music with a pulse, a binaural layer tuned to you, and an honest record of whether it helps.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="violet">
+<meta name="theme-color" content="#020403">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-180.png">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">VIOLET<span class="slash">//</span><span id="brand-view">PLAY</span></div>
+  <div class="status" id="status" aria-live="polite"></div>
+</header>
+
+<main id="main">
+  <section class="view" id="view-play" data-view="play"></section>
+  <section class="view" id="view-library" data-view="library" hidden></section>
+  <section class="view" id="view-lists" data-view="lists" hidden></section>
+  <section class="view" id="view-log" data-view="log" hidden></section>
+  <section class="view" id="view-setup" data-view="setup" hidden></section>
+</main>
+
+<div id="gate" class="gate" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="sheet" class="sheet"></dialog>
+
+<nav class="tabs" aria-label="Sections">
+  <a href="#/play" data-tab="play"><span class="glyph">&#9654;</span>PLAY</a>
+  <a href="#/library" data-tab="library"><span class="glyph">&#9776;</span>LIBRARY</a>
+  <a href="#/lists" data-tab="lists"><span class="glyph">&#8801;</span>LISTS</a>
+  <a href="#/log" data-tab="log"><span class="glyph">&#8721;</span>LOG</a>
+  <a href="#/setup" data-tab="setup"><span class="glyph">&#9881;</span>SETUP</a>
+</nav>
+
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

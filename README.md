@@ -540,6 +540,66 @@ the numbers, stopping because they're interesting, and then quoting the p-value
 as though the stopping rule had been fixed in advance. Decide how many sessions
 you're doing before you start.
 
+## The phone app
+
+`web/` is violet as a home-screen app: music with the pulse applied live in the
+browser, a binaural layer tuned to your base frequency underneath, a work/break
+timer, playlists, offline playback, and a blind test that flips a coin each
+session and only tells you which arm you got after you've rated it. Three
+modes: **Deep Focus** (16 Hz pulse), **Creativity** (10 Hz, lighter), and
+**Meditate** (no pulse; a binaural glide from alpha to theta over the plain
+bed).
+
+It runs on Cloudflare's free tier — a worker, R2 for the audio, D1 for
+everything else — and Cloudflare Access handles sign-in, so a friend needs
+only an email address you've allowed. Each person gets their own settings,
+playlists, ratings and history; the library and its tags are shared.
+[`web/README.md`](web/README.md) is the contract between the app, its worker
+and `violet library`, and records what an iPhone was measured to do.
+
+```sh
+cd web
+npm test                       # node --test, no dependencies
+npx wrangler dev               # local, with DEV_EMAIL in .dev.vars
+npx wrangler deploy
+```
+
+The binaural layer on a speaker is not the binaural percept — the two tones
+meet in the air and beat as a monaural tremolo, which is a different thing (see
+[Playback](#playback)). On headphones each ear gets its own tone. The blind
+test switches the pulse and the binaural layer together, and it is honest about
+its limit: the binaural tone is audible, so it hides the label from you, not
+the sound.
+
+### Music for the app
+
+`violet library` gathers, measures and publishes what the app plays.
+
+```sh
+uv run violet library fetch --hours 40      # Creative Commons netlabels, Internet Archive
+uv run violet library add track.mp3 --title ... --artist ...     --license "CC BY 4.0" --license-url ... --source-url ...
+uv run violet library list --tag focus
+uv run violet library tag 0123456789abcdef +vocals -focus
+uv run violet library publish               # new files to R2, rows to D1
+```
+
+`fetch` fills three pools — steady-beat instrumentals, beatless ambient and
+piano, other calm instrumentals — keeping only CC0, public domain, BY, BY-SA,
+BY-NC and BY-NC-SA, never ND, and only tracks whose measured beat suits the
+pool. Spoken word, rap, DJ mixes and rips with false licence claims are turned
+away by keyword; the Internet Archive has all four. `add` takes music you own
+(MP3 as is; FLAC, WAV, Ogg or AIFF re-encoded).
+
+Every track is measured once: BS.1770-4 loudness, checked against EBU Tech
+3341, and a playback gain to −16 LUFS so the pulse's depth means the same on
+every track; tempo and first beat, so the pulse locks to the music; how clearly
+there is a beat at all; how busy and how bright. Then it is tagged by the rules
+in `web/README.md`. `publish` is safe to run again, and a tag someone removed in
+the app stays removed. Everything lives in `library/`, which git ignores.
+
+[docs/finding-music.md](docs/finding-music.md) says where to get more, which
+licences the app can use, and how to add what you find.
+
 ## Playback
 
 **Headphones, not speakers.** In a room the two tones mix in the air before they
@@ -556,7 +616,7 @@ gives the encoder more to spend bits on.
 ## Development
 
 ```sh
-uv run pytest                  # 571 tests, about a minute and a half
+uv run pytest                  # 753 tests, a few minutes
 uv run pytest --cov            # 99% covered, with a 97% floor that CI enforces
 uv run ruff check .
 uv run ruff format --check .
@@ -588,8 +648,17 @@ violet/
   engine.py     block-streaming renderer, sinks, loop closing
   presets.py    frozen config, TOML loading
   trial.py      blinded trials: sealed assignment, logging, honest statistics
+  analysis.py   loudness (BS.1770-4), tempo, first beat, beat strength, feel
+  archive.py    Internet Archive search, licence parsing, downloads
+  library.py    the local music library, auto tags, publishing to R2 and D1
+  library_cli.py  `violet library`
   data/         presets.toml — where the base frequency actually lives
   cli.py        typer CLI
+web/
+  worker/       Access sign-in, the JSON API, range-serving media from R2
+  public/       the app: vanilla ES modules, a service worker, no build step
+  migrations/   the D1 schema
+  test/         node --test
 ```
 
 The `Layer` protocol is the load-bearing abstraction. Adding a sound source
@@ -628,8 +697,9 @@ README and in `data/presets.toml` and nowhere in the Python.
    the head uses interaural phase and time difference — exactly what the beat
    uses. They degrade each other. Worth building as an explicit either/or with
    the tradeoff documented, not as a default.
-5. **Loudness normalisation.** `pyloudnorm` to land every preset on the same
-   LUFS target, replacing the hand-tuned gain constants.
+5. **Loudness normalisation.** Land every preset on the same LUFS target,
+   replacing the hand-tuned gain constants. `violet.analysis` now measures
+   BS.1770-4 loudness for the music library, so the measuring half exists.
 6. **Progression DSL.** `Em:45 C:50 G:40 Am:55` parsed into the same chord
    objects the walk produces, so the walk becomes one generator among several.
 7. **The violet companion.** A generated page at the mapped colour, brightness
@@ -637,8 +707,7 @@ README and in `data/presets.toml` and nowhere in the Python.
    approximation, and that is worth saying on the page itself.
 8. ~~**Isochronic and monaural modes.**~~ Superseded by amplitude
    modulation — see [A pulse you can hear on a speaker](#a-pulse-you-can-hear-on-a-speaker).
-9. **A phone player.** The modulation is cheap enough to run live in Web Audio,
-   which would make one music file serve every rate and depth.
+9. ~~**A phone player.**~~ Done — see [The phone app](#the-phone-app).
 
 ## Licence
 

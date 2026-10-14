@@ -31,3 +31,11 @@ trials/
 
 # os
 .DS_Store
+
+# the music library — downloads, ingest output, and anything you bought
+library/
+
+# the web app's tooling
+web/node_modules/
+web/.wrangler/
+web/.dev.vars

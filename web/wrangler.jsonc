@@ -1,0 +1,30 @@
+{
+  // The violet phone app: static files in public/, an API and range-serving
+  // media proxy in worker/, music in R2, everything else in D1.
+  "name": "violet",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/media/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "violet",
+      "database_id": "1cdcad00-b834-4def-a280-10b71d609993",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "MUSIC", "bucket_name": "violet-music" }
+  ],
+  "vars": {
+    // Filled in once Cloudflare Access is switched on for this worker. Until
+    // then every /api and /media request is refused.
+    "ACCESS_TEAM_DOMAIN": "wandering-sound.cloudflareaccess.com",
+    "ACCESS_AUD": "2b605a4b752bd5db3ac7c260d3d2aad0e608afd3bf89c27c739959d006e0e616"
+  }
+}

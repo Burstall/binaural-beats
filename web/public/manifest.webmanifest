@@ -1,0 +1,16 @@
+{
+  "name": "violet",
+  "short_name": "violet",
+  "description": "Music with a pulse, a binaural layer tuned to you, and an honest record of whether it helps.",
+  "id": "/",
+  "start_url": "/#/play",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#020403",
+  "theme_color": "#020403",
+  "icons": [
+    { "src": "/icons/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

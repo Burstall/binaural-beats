@@ -49,3 +49,24 @@ jobs:
 
       - name: Test
         run: uv run pytest --cov --cov-report=term-missing
+
+  web:
+    # The phone app and its worker. No npm install: the tests use nothing but
+    # Node itself (node:test, node:sqlite for D1, WebCrypto for Access JWTs).
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Syntax check
+        run: for f in worker/*.js public/sw.js public/js/*.js public/js/views/*.js; do node --check "$f"; done
+
+      - name: Test
+        run: node --test "test/*.test.js"
